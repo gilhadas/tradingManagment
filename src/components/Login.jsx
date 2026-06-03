@@ -18,7 +18,7 @@ export default function Login() {
       style={{
         minHeight: "100vh",
         background: "#050505",
-        color: "#ccc",
+        color: "#f0f0f0",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",

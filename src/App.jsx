@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { supabase } from "./lib/supabase";
 import { toRow, fromRow } from "./lib/tradeMap";
+import { parseIBKRCsv } from "./lib/ibkrParser";
 import Login from "./components/Login";
 
 const STORAGE_KEY = "trade_journal_v1";
@@ -44,9 +45,9 @@ function Tag({ label, selected, onClick }) {
       style={{
         padding: "4px 12px",
         borderRadius: 2,
-        border: selected ? "1.5px solid #e8c84a" : "1.5px solid #333",
+        border: selected ? "1.5px solid #e8c84a" : "1.5px solid #444",
         background: selected ? "#e8c84a15" : "transparent",
-        color: selected ? "#e8c84a" : "#666",
+        color: selected ? "#e8c84a" : "#aaa",
         fontSize: 12,
         fontFamily: "'IBM Plex Mono', monospace",
         cursor: "pointer",
@@ -88,7 +89,7 @@ function Input({ value, onChange, placeholder, type = "text" }) {
         border: "1px solid #2a2a2a",
         borderRadius: 2,
         padding: "8px 10px",
-        color: "#ccc",
+        color: "#e8e8e8",
         fontFamily: "'IBM Plex Mono', monospace",
         fontSize: 13,
         outline: "none",
@@ -111,7 +112,7 @@ function Textarea({ value, onChange, placeholder, rows = 3 }) {
         border: "1px solid #2a2a2a",
         borderRadius: 2,
         padding: "8px 10px",
-        color: "#ccc",
+        color: "#e8e8e8",
         fontFamily: "'IBM Plex Mono', monospace",
         fontSize: 13,
         outline: "none",
@@ -582,6 +583,30 @@ export default function App() {
     e.target.value = "";
   };
 
+  const handleImportIBKR = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      try {
+        const parsed = parseIBKRCsv(ev.target.result);
+        if (parsed.length === 0) {
+          alert("No Buy/Sell transactions found in this file.");
+          return;
+        }
+        const rows = parsed.map(t => toRow(t, session.user.id));
+        const { error } = await supabase.from("trades").insert(rows);
+        if (error) throw error;
+        setTrades(await fetchTrades());
+        alert(`Imported ${parsed.length} trade${parsed.length !== 1 ? "s" : ""} from IBKR CSV.\nEntry/exit prices are pre-filled — add your notes, lessons and setup type manually.`);
+      } catch (err) {
+        alert("Import error: " + (err.message || "Invalid file"));
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  };
+
   const handleCancel = () => {
     setShowForm(false);
     setEditing(null);
@@ -612,7 +637,7 @@ export default function App() {
     <div style={{
       minHeight: "100vh",
       background: "#050505",
-      color: "#ccc",
+      color: "#f0f0f0",
       padding: "0",
       fontFamily: "'IBM Plex Mono', monospace",
     }}>
@@ -643,10 +668,15 @@ export default function App() {
           }}>הפקת לקחים</div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          {/* Import */}
+          {/* Import JSON */}
           <label style={btnStyle}>
             ↑ Import
             <input type="file" accept=".json" onChange={handleImport} style={{ display: "none" }} />
+          </label>
+          {/* Import IBKR CSV */}
+          <label style={{ ...btnStyle, color: "#7aaacc" }} title="Import IBKR Transaction History CSV">
+            ↑ IBKR
+            <input type="file" accept=".csv" onChange={handleImportIBKR} style={{ display: "none" }} />
           </label>
           {/* Export */}
           <button onClick={handleExport} style={btnStyle}>↓ Export</button>
