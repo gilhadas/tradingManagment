@@ -67,7 +67,7 @@ function Field({ label, children }) {
         fontSize: 10,
         letterSpacing: "0.12em",
         textTransform: "uppercase",
-        color: "#555",
+        color: "#aaa",
         marginBottom: 6,
         fontFamily: "'IBM Plex Mono', monospace",
       }}>{label}</div>
@@ -164,14 +164,14 @@ function TradeCard({ trade, onEdit, onDelete }) {
           }}>{trade.ticker || "—"}</span>
           <span style={{
             fontSize: 10,
-            color: "#444",
+            color: "#888",
             fontFamily: "'IBM Plex Mono', monospace",
             letterSpacing: "0.08em",
           }}>{trade.date}</span>
           {trade.setupType && (
             <span style={{
               fontSize: 10,
-              color: "#555",
+              color: "#aaa",
               fontFamily: "'IBM Plex Mono', monospace",
               border: "1px solid #2a2a2a",
               padding: "1px 6px",
@@ -189,7 +189,7 @@ function TradeCard({ trade, onEdit, onDelete }) {
       {trade.lesson && (
         <div style={{
           fontSize: 12,
-          color: "#555",
+          color: "#aaa",
           fontFamily: "'IBM Plex Mono', monospace",
           borderTop: "1px solid #1a1a1a",
           marginTop: 8,
@@ -247,7 +247,7 @@ function TradeForm({ trade, onChange, onSave, onCancel, saving }) {
         fontSize: 11,
         letterSpacing: "0.15em",
         textTransform: "uppercase",
-        color: "#444",
+        color: "#888",
         marginBottom: 20,
         fontFamily: "'IBM Plex Mono', monospace",
         borderBottom: "1px solid #1a1a1a",
@@ -358,7 +358,7 @@ function TradeForm({ trade, onChange, onSave, onCancel, saving }) {
           padding: "8px 20px",
           background: "none",
           border: "1px solid #2a2a2a",
-          color: "#555",
+          color: "#aaa",
           borderRadius: 2,
           fontFamily: "'IBM Plex Mono', monospace",
           fontSize: 12,
@@ -641,6 +641,10 @@ export default function App() {
       padding: "0",
       fontFamily: "'IBM Plex Mono', monospace",
     }}>
+      <style>{`
+        input::placeholder { color: #e8e8e8; opacity: 1; }
+        textarea::placeholder { color: #e8e8e8; opacity: 1; }
+      `}</style>
       <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&display=swap" rel="stylesheet" />
 
       {/* Header */}
@@ -657,7 +661,7 @@ export default function App() {
             fontSize: 11,
             letterSpacing: "0.2em",
             textTransform: "uppercase",
-            color: "#333",
+            color: "#999",
             marginBottom: 4,
           }}>Trade Journal</div>
           <div style={{

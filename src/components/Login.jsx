@@ -25,6 +25,9 @@ export default function Login() {
         fontFamily: "'IBM Plex Mono', monospace",
       }}
     >
+      <style>{`
+        input::placeholder { color: #e8e8e8; opacity: 1; }
+      `}</style>
       <link
         href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&display=swap"
         rel="stylesheet"
