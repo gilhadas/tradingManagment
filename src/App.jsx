@@ -182,7 +182,7 @@ function TradeCard({ trade, onEdit, onDelete }) {
         <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
           <PnlBadge pnl={trade.pnl} />
           <button onClick={e => { e.stopPropagation(); onDelete(trade.id); }} style={{
-            background: "none", border: "none", color: "#333", cursor: "pointer", fontSize: 14, padding: "0 4px"
+            background: "none", border: "none", color: "#777", cursor: "pointer", fontSize: 14, padding: "0 4px"
           }}>✕</button>
         </div>
       </div>
@@ -253,7 +253,7 @@ function TradeForm({ trade, onChange, onSave, onCancel, saving }) {
         borderBottom: "1px solid #1a1a1a",
         paddingBottom: 12,
       }}>
-        {trade.id ? `עריכה / ${trade.ticker || "טריייד"}` : "טריייד חדש"}
+        {trade.id ? `Edit / ${trade.ticker || "Trade"}` : "New Trade"}
       </div>
 
       {/* Row 1 */}
@@ -261,10 +261,10 @@ function TradeForm({ trade, onChange, onSave, onCancel, saving }) {
         <Field label="Ticker">
           <Input value={trade.ticker} onChange={v => onChange("ticker", v.toUpperCase())} placeholder="AAPL" />
         </Field>
-        <Field label="תאריך">
+        <Field label="Date">
           <Input type="date" value={trade.date} onChange={v => onChange("date", v)} />
         </Field>
-        <Field label="כיוון">
+        <Field label="Direction">
           <div style={{ display: "flex", gap: 8 }}>
             {["Long", "Short"].map(d => (
               <Tag key={d} label={d} selected={trade.direction === d} onClick={() => onChange("direction", d)} />
@@ -275,13 +275,13 @@ function TradeForm({ trade, onChange, onSave, onCancel, saving }) {
 
       {/* Row 2 */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16 }}>
-        <Field label="כניסה $">
+        <Field label="Entry $">
           <Input type="number" value={trade.entryPrice} onChange={v => onChange("entryPrice", v)} placeholder="0.00" />
         </Field>
-        <Field label="סטופ $">
+        <Field label="Stop $">
           <Input type="number" value={trade.stopPrice} onChange={v => onChange("stopPrice", v)} placeholder="0.00" />
         </Field>
-        <Field label="יציאה $">
+        <Field label="Exit $">
           <Input type="number" value={trade.exitPrice} onChange={v => onChange("exitPrice", v)} placeholder="0.00" />
         </Field>
       </div>
@@ -295,7 +295,7 @@ function TradeForm({ trade, onChange, onSave, onCancel, saving }) {
             padding: "8px 10px",
             border: "1px solid #1a1a1a",
             borderRadius: 2,
-            color: rr ? (parseFloat(rr) >= 1 ? "#4caf7d" : "#e05252") : "#333",
+            color: rr ? (parseFloat(rr) >= 1 ? "#4caf7d" : "#e05252") : "#777",
             fontFamily: "'IBM Plex Mono', monospace",
             fontSize: 13,
           }}>
@@ -304,7 +304,7 @@ function TradeForm({ trade, onChange, onSave, onCancel, saving }) {
         </Field>
       </div>
 
-      <Field label="סוג סטאפ">
+      <Field label="Setup Type">
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           {SETUP_TYPES.map(s => (
             <Tag key={s} label={s} selected={trade.setupType === s} onClick={() => onChange("setupType", s)} />
@@ -312,11 +312,11 @@ function TradeForm({ trade, onChange, onSave, onCancel, saving }) {
         </div>
       </Field>
 
-      <Field label="קטליזטור / שמועה">
-        <Input value={trade.catalyst} onChange={v => onChange("catalyst", v)} placeholder="מה גרם לטריייד?" />
+      <Field label="Catalyst / News">
+        <Input value={trade.catalyst} onChange={v => onChange("catalyst", v)} placeholder="What triggered the trade?" />
       </Field>
 
-      <Field label="מצב רגשי בכניסה">
+      <Field label="Emotion at Entry">
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           {EMOTIONS.map(e => (
             <Tag key={e} label={e} selected={trade.emotionEntry === e} onClick={() => onChange("emotionEntry", e)} />
@@ -324,7 +324,7 @@ function TradeForm({ trade, onChange, onSave, onCancel, saving }) {
         </div>
       </Field>
 
-      <Field label="טעויות שביצעתי">
+      <Field label="Mistakes Made">
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           {MISTAKES.map(m => (
             <Tag key={m} label={m} selected={(trade.mistakes || []).includes(m)} onClick={() => toggleMistake(m)} />
@@ -333,21 +333,21 @@ function TradeForm({ trade, onChange, onSave, onCancel, saving }) {
       </Field>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-        <Field label="מה עבד">
-          <Textarea value={trade.whatWentRight} onChange={v => onChange("whatWentRight", v)} placeholder="מה עשיתי נכון?" />
+        <Field label="What Worked">
+          <Textarea value={trade.whatWentRight} onChange={v => onChange("whatWentRight", v)} placeholder="What did I do right?" />
         </Field>
-        <Field label="מה לא עבד">
-          <Textarea value={trade.whatWentWrong} onChange={v => onChange("whatWentWrong", v)} placeholder="איפה פישלתי?" />
+        <Field label="What Didn't Work">
+          <Textarea value={trade.whatWentWrong} onChange={v => onChange("whatWentWrong", v)} placeholder="Where did I go wrong?" />
         </Field>
       </div>
 
-      <Field label="לקח מרכזי (משפט אחד)">
-        <Input value={trade.lesson} onChange={v => onChange("lesson", v)} placeholder="הלקח שאני לוקח איתי..." />
+      <Field label="Key Lesson (one sentence)">
+        <Input value={trade.lesson} onChange={v => onChange("lesson", v)} placeholder="The lesson I'm taking away..." />
       </Field>
 
-      <Field label="היית לוקח את הטריייד הזה שוב?">
+      <Field label="Would you take this trade again?">
         <div style={{ display: "flex", gap: 8 }}>
-          {[{ v: true, l: "כן — same setup" }, { v: false, l: "לא — הייתי מדלג" }].map(({ v, l }) => (
+          {[{ v: true, l: "Yes — same setup" }, { v: false, l: "No — would skip" }].map(({ v, l }) => (
             <Tag key={l} label={l} selected={trade.wouldRetake === v} onClick={() => onChange("wouldRetake", v)} />
           ))}
         </div>
@@ -364,7 +364,7 @@ function TradeForm({ trade, onChange, onSave, onCancel, saving }) {
           fontSize: 12,
           cursor: saving ? "default" : "pointer",
           letterSpacing: "0.08em",
-        }}>ביטול</button>
+        }}>Cancel</button>
         <button onClick={onSave} disabled={saving} style={{
           padding: "8px 20px",
           background: "#e8c84a",
@@ -377,7 +377,7 @@ function TradeForm({ trade, onChange, onSave, onCancel, saving }) {
           cursor: saving ? "default" : "pointer",
           opacity: saving ? 0.6 : 1,
           letterSpacing: "0.08em",
-        }}>{saving ? "שומר..." : "שמור טריייד"}</button>
+        }}>{saving ? "Saving..." : "Save Trade"}</button>
       </div>
     </div>
   );
@@ -406,13 +406,13 @@ function Stats({ trades }) {
       marginBottom: 24,
     }}>
       {[
-        { label: "סה״כ טריידים", value: trades.length },
+        { label: "Total Trades", value: trades.length },
         { label: "Win Rate", value: `${winRate}%` },
         { label: "Total P&L", value: `${totalPnl > 0 ? "+" : ""}${totalPnl.toFixed(1)}%`, color: totalPnl > 0 ? "#4caf7d" : "#e05252" },
-        { label: "טעות חוזרת", value: topMistake ? topMistake[0] : "—" },
+        { label: "Top Mistake", value: topMistake ? topMistake[0] : "—" },
       ].map(({ label, value, color }) => (
         <div key={label} style={{ padding: "14px 16px", background: "#080808" }}>
-          <div style={{ fontSize: 10, color: "#444", fontFamily: "'IBM Plex Mono', monospace", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 6 }}>{label}</div>
+          <div style={{ fontSize: 10, color: "#888", fontFamily: "'IBM Plex Mono', monospace", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 6 }}>{label}</div>
           <div style={{ fontSize: 18, fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, color: color || "#e8c84a" }}>{value}</div>
         </div>
       ))}
@@ -489,7 +489,7 @@ export default function App() {
         if (migrated) list = await fetchTrades();
         if (active) setTrades(list);
       } catch (e) {
-        if (active) setError(e.message || "שגיאה בטעינת הנתונים");
+        if (active) setError(e.message || "Error loading trades");
       } finally {
         if (active) setLoading(false);
       }
@@ -539,7 +539,7 @@ export default function App() {
       setShowForm(false);
       setEditing(null);
     } catch (e) {
-      setError(e.message || "שגיאה בשמירה");
+      setError(e.message || "Error saving trade");
     } finally {
       setSaving(false);
     }
@@ -572,12 +572,12 @@ export default function App() {
     reader.onload = async (ev) => {
       try {
         const data = JSON.parse(ev.target.result);
-        if (!Array.isArray(data)) { alert("קובץ לא תקין"); return; }
+        if (!Array.isArray(data)) { alert("Invalid file"); return; }
         const rows = data.map(t => toRow(t, session.user.id));
         const { error } = await supabase.from("trades").insert(rows);
         if (error) throw error;
         setTrades(await fetchTrades());
-      } catch (err) { alert("שגיאה בייבוא: " + (err.message || "קובץ לא תקין")); }
+      } catch (err) { alert("Import error: " + (err.message || "Invalid file")); }
     };
     reader.readAsText(file);
     e.target.value = "";
@@ -634,7 +634,7 @@ export default function App() {
   };
 
   return (
-    <div style={{
+    <div dir="ltr" style={{
       minHeight: "100vh",
       background: "#050505",
       color: "#f0f0f0",
@@ -669,7 +669,7 @@ export default function App() {
             fontWeight: 700,
             color: "#e8c84a",
             letterSpacing: "0.05em",
-          }}>הפקת לקחים</div>
+          }}>Lessons Learned</div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           {/* Import JSON */}
@@ -685,7 +685,7 @@ export default function App() {
           {/* Export */}
           <button onClick={handleExport} style={btnStyle}>↓ Export</button>
           {/* Sign out */}
-          <button onClick={handleSignOut} style={btnStyle} title={session.user.email}>יציאה</button>
+          <button onClick={handleSignOut} style={btnStyle} title={session.user.email}>Sign Out</button>
           <button onClick={handleNew} style={{
             padding: "10px 22px",
             background: "#e8c84a",
@@ -697,7 +697,7 @@ export default function App() {
             fontWeight: 700,
             cursor: "pointer",
             letterSpacing: "0.1em",
-          }}>+ טריייד חדש</button>
+          }}>+ New Trade</button>
         </div>
       </div>
 
@@ -730,7 +730,7 @@ export default function App() {
 
         {loading && (
           <div style={{ textAlign: "center", padding: "40px 20px", color: "#2a2a2a", fontSize: 13, letterSpacing: "0.08em" }}>
-            טוען...
+            Loading...
           </div>
         )}
 
@@ -738,11 +738,11 @@ export default function App() {
           <div style={{
             textAlign: "center",
             padding: "60px 20px",
-            color: "#2a2a2a",
+            color: "#cccccc",
             fontSize: 13,
             letterSpacing: "0.08em",
           }}>
-            אין טריידים עדיין — הוסף את הראשון
+            No trades yet — add your first one
           </div>
         )}
 

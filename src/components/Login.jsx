@@ -15,6 +15,7 @@ export default function Login() {
 
   return (
     <div
+      dir="ltr"
       style={{
         minHeight: "100vh",
         background: "#050505",
@@ -47,7 +48,7 @@ export default function Login() {
             fontSize: 11,
             letterSpacing: "0.2em",
             textTransform: "uppercase",
-            color: "#333",
+            color: "#888",
             marginBottom: 6,
           }}
         >
@@ -62,7 +63,7 @@ export default function Login() {
             marginBottom: 28,
           }}
         >
-          הפקת לקחים
+          Lessons Learned
         </div>
         <button
           onClick={signIn}
@@ -80,18 +81,18 @@ export default function Login() {
             letterSpacing: "0.08em",
           }}
         >
-          התחבר עם Google
+          Sign in with Google
         </button>
         <div
           style={{
             fontSize: 10,
-            color: "#444",
+            color: "#888",
             marginTop: 18,
             letterSpacing: "0.06em",
             lineHeight: 1.6,
           }}
         >
-          הנתונים שלך מסונכרנים בין כל המכשירים
+          Your data syncs across all devices
         </div>
         {error && (
           <div style={{ color: "#e05252", fontSize: 11, marginTop: 16 }}>
