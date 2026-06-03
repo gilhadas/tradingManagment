@@ -26,6 +26,7 @@ const emptyTrade = () => ({
   direction: "Long",
   setupType: "",
   catalyst: "",
+  quantity: "",
   entryPrice: "",
   stopPrice: "",
   exitPrice: "",
@@ -162,6 +163,13 @@ function TradeCard({ trade, onEdit, onDelete }) {
             color: "#e8c84a",
             letterSpacing: "0.05em",
           }}>{trade.ticker || "—"}</span>
+          {trade.quantity && (
+            <span style={{
+              fontSize: 11,
+              color: "#888",
+              fontFamily: "'IBM Plex Mono', monospace",
+            }}>× {trade.quantity}</span>
+          )}
           <span style={{
             fontSize: 10,
             color: "#888",
@@ -274,7 +282,10 @@ function TradeForm({ trade, onChange, onSave, onCancel, saving }) {
       </div>
 
       {/* Row 2 */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 16 }}>
+        <Field label="Qty (shares)">
+          <Input type="number" value={trade.quantity} onChange={v => onChange("quantity", v)} placeholder="100" />
+        </Field>
         <Field label="Entry $">
           <Input type="number" value={trade.entryPrice} onChange={v => onChange("entryPrice", v)} placeholder="0.00" />
         </Field>

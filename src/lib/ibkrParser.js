@@ -96,12 +96,17 @@ export function parseIBKRCsv(text) {
       pnl = pnlPct.toFixed(2);
     }
 
+    const totalQty = direction === "Long"
+      ? buys.reduce((s, f) => s + f.qty, 0)
+      : sells.reduce((s, f) => s + f.qty, 0);
+
     trades.push({
       date,
       ticker,
       direction,
       setupType: "",
       catalyst: "",
+      quantity: totalQty > 0 ? String(totalQty) : "",
       entryPrice: entryPrice != null ? entryPrice.toFixed(2) : "",
       stopPrice: "",
       exitPrice: exitPrice != null ? exitPrice.toFixed(2) : "",
