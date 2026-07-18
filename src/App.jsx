@@ -399,7 +399,15 @@ function Stats({ trades }) {
   const withPnl = trades.filter(t => !isNaN(parseFloat(t.pnl)));
   const winners = withPnl.filter(t => parseFloat(t.pnl) > 0);
   const winRate = withPnl.length ? Math.round((winners.length / withPnl.length) * 100) : 0;
-  const totalPnl = withPnl.reduce((s, t) => s + parseFloat(t.pnl), 0);
+  // דולר P&L אמיתי: כמות × (יציאה − כניסה), רק לטריידים שיש להם את שלושת הערכים.
+  const totalPnl = trades.reduce((s, t) => {
+    const qty = parseFloat(t.quantity);
+    const entry = parseFloat(t.entryPrice);
+    const exit = parseFloat(t.exitPrice);
+    if (isNaN(qty) || isNaN(entry) || isNaN(exit)) return s;
+    const perShare = t.direction === "Short" ? entry - exit : exit - entry;
+    return s + perShare * qty;
+  }, 0);
 
   const mistakeCounts = {};
   trades.forEach(t => (t.mistakes || []).forEach(m => { mistakeCounts[m] = (mistakeCounts[m] || 0) + 1; }));
@@ -419,7 +427,7 @@ function Stats({ trades }) {
       {[
         { label: "Total Trades", value: trades.length },
         { label: "Win Rate", value: `${winRate}%` },
-        { label: "Total P&L", value: `${totalPnl > 0 ? "+" : ""}${totalPnl.toFixed(1)}%`, color: totalPnl > 0 ? "#4caf7d" : "#e05252" },
+        { label: "Total P&L", value: `${totalPnl < 0 ? "-" : totalPnl > 0 ? "+" : ""}$${Math.abs(totalPnl).toLocaleString("en-US", { maximumFractionDigits: 0 })}`, color: totalPnl > 0 ? "#4caf7d" : "#e05252" },
         { label: "Top Mistake", value: topMistake ? topMistake[0] : "—" },
       ].map(({ label, value, color }) => (
         <div key={label} style={{ padding: "14px 16px", background: "#080808" }}>
