@@ -20,6 +20,26 @@ const MISTAKES = [
   "Ignored market context",
 ];
 
+// רווח/הפסד בדולרים: כמות × (יציאה − כניסה), הפוך לשורט. null אם חסר ערך.
+const tradeDollarPnl = (t) => {
+  const qty = parseFloat(t.quantity);
+  const entry = parseFloat(t.entryPrice);
+  const exit = parseFloat(t.exitPrice);
+  if (isNaN(qty) || isNaN(entry) || isNaN(exit)) return null;
+  return (t.direction === "Short" ? entry - exit : exit - entry) * qty;
+};
+
+// שווי הפוזיציה בדולרים: כמות × מחיר כניסה. null אם חסר ערך.
+const tradePositionValue = (t) => {
+  const qty = parseFloat(t.quantity);
+  const entry = parseFloat(t.entryPrice);
+  if (isNaN(qty) || isNaN(entry)) return null;
+  return qty * entry;
+};
+
+const fmtUsd = (n, signed = false) =>
+  `${n < 0 ? "-" : signed && n > 0 ? "+" : ""}$${Math.abs(n).toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
+
 const emptyTrade = () => ({
   date: new Date().toISOString().slice(0, 10),
   ticker: "",
@@ -143,6 +163,8 @@ function PnlBadge({ pnl }) {
 function TradeCard({ trade, onEdit, onDelete }) {
   const pnl = parseFloat(trade.pnl);
   const borderColor = isNaN(pnl) ? "#222" : pnl > 0 ? "#1e3d2a" : pnl < 0 ? "#3d1e1e" : "#222";
+  const dollarPnl = tradeDollarPnl(trade);
+  const posValue = tradePositionValue(trade);
 
   return (
     <div style={{
@@ -168,7 +190,7 @@ function TradeCard({ trade, onEdit, onDelete }) {
               fontSize: 11,
               color: "#888",
               fontFamily: "'IBM Plex Mono', monospace",
-            }}>× {trade.quantity}</span>
+            }}>× {trade.quantity}{posValue != null ? ` · ${fmtUsd(posValue)}` : ""}</span>
           )}
           <span style={{
             fontSize: 10,
@@ -188,6 +210,14 @@ function TradeCard({ trade, onEdit, onDelete }) {
           )}
         </div>
         <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+          {dollarPnl != null && (
+            <span style={{
+              color: dollarPnl > 0 ? "#4caf7d" : dollarPnl < 0 ? "#e05252" : "#888",
+              fontFamily: "'IBM Plex Mono', monospace",
+              fontSize: 13,
+              fontWeight: 600,
+            }}>{fmtUsd(dollarPnl, true)}</span>
+          )}
           <PnlBadge pnl={trade.pnl} />
           <button onClick={e => { e.stopPropagation(); onDelete(trade.id); }} style={{
             background: "none", border: "none", color: "#777", cursor: "pointer", fontSize: 14, padding: "0 4px"
@@ -243,6 +273,21 @@ function TradeForm({ trade, onChange, onSave, onCancel, saving }) {
   };
 
   const rr = riskReward();
+  const dollarPnl = tradeDollarPnl(trade);
+  const posValue = tradePositionValue(trade);
+
+  const computedBox = (content, color) => (
+    <div style={{
+      padding: "8px 10px",
+      border: "1px solid #1a1a1a",
+      borderRadius: 2,
+      color: color || "#777",
+      fontFamily: "'IBM Plex Mono', monospace",
+      fontSize: 13,
+    }}>
+      {content}
+    </div>
+  );
 
   return (
     <div style={{
@@ -297,21 +342,21 @@ function TradeForm({ trade, onChange, onSave, onCancel, saving }) {
         </Field>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 16 }}>
         <Field label="P&L %">
           <Input type="number" value={trade.pnl} onChange={v => onChange("pnl", v)} placeholder="-2.5" />
         </Field>
         <Field label="R:R">
-          <div style={{
-            padding: "8px 10px",
-            border: "1px solid #1a1a1a",
-            borderRadius: 2,
-            color: rr ? (parseFloat(rr) >= 1 ? "#4caf7d" : "#e05252") : "#777",
-            fontFamily: "'IBM Plex Mono', monospace",
-            fontSize: 13,
-          }}>
-            {rr ? `1 : ${rr}` : "—"}
-          </div>
+          {computedBox(rr ? `1 : ${rr}` : "—", rr ? (parseFloat(rr) >= 1 ? "#4caf7d" : "#e05252") : null)}
+        </Field>
+        <Field label="Position $">
+          {computedBox(posValue != null ? fmtUsd(posValue) : "—", posValue != null ? "#e8e8e8" : null)}
+        </Field>
+        <Field label="P&L $">
+          {computedBox(
+            dollarPnl != null ? fmtUsd(dollarPnl, true) : "—",
+            dollarPnl != null ? (dollarPnl > 0 ? "#4caf7d" : dollarPnl < 0 ? "#e05252" : "#888") : null,
+          )}
         </Field>
       </div>
 
@@ -399,15 +444,8 @@ function Stats({ trades }) {
   const withPnl = trades.filter(t => !isNaN(parseFloat(t.pnl)));
   const winners = withPnl.filter(t => parseFloat(t.pnl) > 0);
   const winRate = withPnl.length ? Math.round((winners.length / withPnl.length) * 100) : 0;
-  // דולר P&L אמיתי: כמות × (יציאה − כניסה), רק לטריידים שיש להם את שלושת הערכים.
-  const totalPnl = trades.reduce((s, t) => {
-    const qty = parseFloat(t.quantity);
-    const entry = parseFloat(t.entryPrice);
-    const exit = parseFloat(t.exitPrice);
-    if (isNaN(qty) || isNaN(entry) || isNaN(exit)) return s;
-    const perShare = t.direction === "Short" ? entry - exit : exit - entry;
-    return s + perShare * qty;
-  }, 0);
+  // דולר P&L אמיתי, רק לטריידים שיש להם כמות + כניסה + יציאה.
+  const totalPnl = trades.reduce((s, t) => s + (tradeDollarPnl(t) ?? 0), 0);
 
   const mistakeCounts = {};
   trades.forEach(t => (t.mistakes || []).forEach(m => { mistakeCounts[m] = (mistakeCounts[m] || 0) + 1; }));
@@ -427,7 +465,7 @@ function Stats({ trades }) {
       {[
         { label: "Total Trades", value: trades.length },
         { label: "Win Rate", value: `${winRate}%` },
-        { label: "Total P&L", value: `${totalPnl < 0 ? "-" : totalPnl > 0 ? "+" : ""}$${Math.abs(totalPnl).toLocaleString("en-US", { maximumFractionDigits: 0 })}`, color: totalPnl > 0 ? "#4caf7d" : "#e05252" },
+        { label: "Total P&L", value: fmtUsd(totalPnl, true), color: totalPnl > 0 ? "#4caf7d" : "#e05252" },
         { label: "Top Mistake", value: topMistake ? topMistake[0] : "—" },
       ].map(({ label, value, color }) => (
         <div key={label} style={{ padding: "14px 16px", background: "#080808" }}>
