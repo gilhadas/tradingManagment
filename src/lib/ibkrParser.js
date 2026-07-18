@@ -1,5 +1,8 @@
 // Parses an IBKR "Transaction History" CSV export into trade journal entries.
-// Groups partial fills for the same ticker on the same day into a single trade.
+// Tracks a running position per symbol across days: buys open or add to the
+// position, sells close against it, and each close produces one journal entry
+// with the position's weighted-average entry vs. the sell's weighted-average
+// exit. Same-day round trips therefore still collapse into a single row.
 
 // Handles quoted fields properly (IBKR sometimes quotes values with commas).
 function parseCsvLine(line) {
@@ -28,17 +31,49 @@ function weightedAvg(fills) {
   return fills.reduce((s, f) => s + f.price * f.qty, 0) / totalQty;
 }
 
+// Blank journal entry; parsed fields are merged over it. The rest (setupType,
+// catalyst, emotions, lesson, …) stay blank for the user to fill in manually.
+function makeTrade({ date, ticker, quantity, entryPrice, exitPrice }) {
+  let pnl = "";
+  if (entryPrice != null && exitPrice != null && entryPrice !== 0) {
+    pnl = (((exitPrice - entryPrice) / entryPrice) * 100).toFixed(2);
+  }
+  return {
+    date,
+    ticker,
+    direction: "Long",
+    setupType: "",
+    catalyst: "",
+    quantity: quantity > 0 ? String(quantity) : "",
+    entryPrice: entryPrice != null ? entryPrice.toFixed(2) : "",
+    stopPrice: "",
+    exitPrice: exitPrice != null ? exitPrice.toFixed(2) : "",
+    pnl,
+    emotionEntry: "",
+    mistakes: [],
+    whatWentRight: "",
+    whatWentWrong: "",
+    lesson: "",
+    wouldRetake: null,
+  };
+}
+
 /**
  * Parse IBKR transaction CSV text.
  * Returns an array of trade objects compatible with the trade journal UI.
- * Fields left blank (setupType, catalyst, emotions, lesson, etc.) are for the
- * user to fill in manually after import.
+ *
+ * The CSV has dates but no intraday timestamps, so fills are aggregated per
+ * symbol per day; within a day buys are assumed to precede sells (long bias).
+ * A trade row is emitted when sells close (part of) an open position, dated by
+ * the day the position was opened. Sells with no matching buys in the file
+ * (position opened before the export window) become exit-only rows, and
+ * positions still open at the end become entry-only rows.
  */
 export function parseIBKRCsv(text) {
   const lines = text.split(/\r?\n/).filter((l) => l.trim());
 
-  // key: "YYYY-MM-DD|SYMBOL" → { date, ticker, buys: [{qty,price}], sells: [{qty,price}] }
-  const groups = {};
+  // symbol → { date → { buys: [{qty,price}], sells: [{qty,price}] } }
+  const bySymbol = {};
 
   for (const line of lines) {
     const cols = parseCsvLine(line);
@@ -54,71 +89,78 @@ export function parseIBKRCsv(text) {
     if (!symbol || symbol === "-") continue;
 
     const date = cols[2]; // "YYYY-MM-DD"
-    const qty = Math.abs(parseFloat(cols[7])) || 0; // always positive
+    const rawQty = parseFloat(cols[7]) || 0; // positive = Buy, negative = Sell
+    const qty = Math.abs(rawQty);
     const price = parseFloat(cols[8]) || 0;
 
     if (qty === 0 || price === 0) continue;
 
-    const key = `${date}|${symbol}`;
-    if (!groups[key]) {
-      groups[key] = { date, ticker: symbol, buys: [], sells: [] };
-    }
-
-    // IBKR: positive qty → Buy, negative qty → Sell (we already took abs above)
-    const rawQty = parseFloat(cols[7]) || 0;
-    if (rawQty > 0) {
-      groups[key].buys.push({ qty, price });
-    } else {
-      groups[key].sells.push({ qty, price });
-    }
+    const days = (bySymbol[symbol] ||= {});
+    const day = (days[date] ||= { buys: [], sells: [] });
+    (rawQty > 0 ? day.buys : day.sells).push({ qty, price });
   }
 
   const trades = [];
 
-  for (const { date, ticker, buys, sells } of Object.values(groups)) {
-    const avgBuy = weightedAvg(buys);
-    const avgSell = weightedAvg(sells);
+  for (const [ticker, days] of Object.entries(bySymbol)) {
+    // Running long position: quantity, weighted-average cost, opening date.
+    let posQty = 0;
+    let posCost = 0;
+    let posDate = null;
 
-    // Determine direction:
-    // - Has buys (with or without sells) → Long trade (day trade or swing)
-    // - Only sells, no buys → closing a Long from a prior day (entry was outside this CSV window)
-    //   We default to Long and leave entryPrice blank for the user to fill in.
-    //   (True short-sells are rare for retail; user can change direction manually if needed.)
-    const direction = "Long";
+    for (const date of Object.keys(days).sort()) {
+      const { buys, sells } = days[date];
 
-    const entryPrice = buys.length > 0 ? avgBuy : null;  // null if entry was on a different day
-    const exitPrice = sells.length > 0 ? avgSell : null;
+      const buyQty = buys.reduce((s, f) => s + f.qty, 0);
+      if (buyQty > 0) {
+        const avgBuy = weightedAvg(buys);
+        if (posQty === 0) posDate = date;
+        posCost = (posCost * posQty + avgBuy * buyQty) / (posQty + buyQty);
+        posQty += buyQty;
+      }
 
-    // P&L % only if we have both entry and exit on the same day.
-    let pnl = "";
-    if (entryPrice && exitPrice) {
-      const pnlPct = ((exitPrice - entryPrice) / entryPrice) * 100;
-      pnl = pnlPct.toFixed(2);
+      const sellQty = sells.reduce((s, f) => s + f.qty, 0);
+      if (sellQty > 0) {
+        const avgSell = weightedAvg(sells);
+
+        const matched = Math.min(sellQty, posQty);
+        if (matched > 0) {
+          trades.push(makeTrade({
+            date: posDate,
+            ticker,
+            quantity: matched,
+            entryPrice: posCost,
+            exitPrice: avgSell,
+          }));
+          posQty -= matched;
+          if (posQty === 0) { posCost = 0; posDate = null; }
+        }
+
+        // Sold more than we bought in this window → closing a position opened
+        // before the export. Entry stays blank for the user to fill in.
+        const excess = sellQty - matched;
+        if (excess > 0) {
+          trades.push(makeTrade({
+            date,
+            ticker,
+            quantity: excess,
+            entryPrice: null,
+            exitPrice: avgSell,
+          }));
+        }
+      }
     }
 
-    // Use buy qty if we have buys (entry), otherwise sell qty (exit only day)
-    const totalQty = buys.length > 0
-      ? buys.reduce((s, f) => s + f.qty, 0)
-      : sells.reduce((s, f) => s + f.qty, 0);
-
-    trades.push({
-      date,
-      ticker,
-      direction,
-      setupType: "",
-      catalyst: "",
-      quantity: totalQty > 0 ? String(totalQty) : "",
-      entryPrice: entryPrice != null ? entryPrice.toFixed(2) : "",
-      stopPrice: "",
-      exitPrice: exitPrice != null ? exitPrice.toFixed(2) : "",
-      pnl,
-      emotionEntry: "",
-      mistakes: [],
-      whatWentRight: "",
-      whatWentWrong: "",
-      lesson: "",
-      wouldRetake: null,
-    });
+    // Still holding at the end of the window → open trade, no exit yet.
+    if (posQty > 0) {
+      trades.push(makeTrade({
+        date: posDate,
+        ticker,
+        quantity: posQty,
+        entryPrice: posCost,
+        exitPrice: null,
+      }));
+    }
   }
 
   // Newest first
