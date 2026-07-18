@@ -79,24 +79,25 @@ export function parseIBKRCsv(text) {
     const avgBuy = weightedAvg(buys);
     const avgSell = weightedAvg(sells);
 
-    // Determine direction: if the session started with buys → Long (day trade or swing entry).
-    // If only sells → Short.
-    const direction = buys.length > 0 ? "Long" : "Short";
+    // Determine direction:
+    // - Has buys (with or without sells) → Long trade (day trade or swing)
+    // - Only sells, no buys → closing a Long from a prior day (entry was outside this CSV window)
+    //   We default to Long and leave entryPrice blank for the user to fill in.
+    //   (True short-sells are rare for retail; user can change direction manually if needed.)
+    const direction = "Long";
 
-    const entryPrice = direction === "Long" ? avgBuy : avgSell;
-    const exitPrice = direction === "Long" ? avgSell : avgBuy;
+    const entryPrice = buys.length > 0 ? avgBuy : null;  // null if entry was on a different day
+    const exitPrice = sells.length > 0 ? avgSell : null;
 
-    // P&L % only if we have both entry and exit (completed trade).
+    // P&L % only if we have both entry and exit on the same day.
     let pnl = "";
     if (entryPrice && exitPrice) {
-      const pnlPct =
-        direction === "Long"
-          ? ((exitPrice - entryPrice) / entryPrice) * 100
-          : ((entryPrice - exitPrice) / entryPrice) * 100;
+      const pnlPct = ((exitPrice - entryPrice) / entryPrice) * 100;
       pnl = pnlPct.toFixed(2);
     }
 
-    const totalQty = direction === "Long"
+    // Use buy qty if we have buys (entry), otherwise sell qty (exit only day)
+    const totalQty = buys.length > 0
       ? buys.reduce((s, f) => s + f.qty, 0)
       : sells.reduce((s, f) => s + f.qty, 0);
 
