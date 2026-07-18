@@ -9,6 +9,7 @@ create table if not exists public.trades (
   direction text,
   setup_type text,
   catalyst text,
+  quantity numeric,
   entry_price numeric,
   stop_price numeric,
   exit_price numeric,
