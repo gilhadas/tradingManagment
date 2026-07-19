@@ -5,7 +5,7 @@
 // exit. Same-day round trips therefore still collapse into a single row.
 
 // Handles quoted fields properly (IBKR sometimes quotes values with commas).
-function parseCsvLine(line) {
+export function parseCsvLine(line) {
   const result = [];
   let current = "";
   let inQuotes = false;
@@ -33,7 +33,8 @@ function weightedAvg(fills) {
 
 // Blank journal entry; parsed fields are merged over it. The rest (setupType,
 // catalyst, emotions, lesson, …) stay blank for the user to fill in manually.
-function makeTrade({ date, ticker, quantity, entryPrice, exitPrice }) {
+// Shared with the other broker parsers (ibiParser).
+export function makeTrade({ date, ticker, quantity, entryPrice, exitPrice }) {
   let pnl = "";
   if (entryPrice != null && exitPrice != null && entryPrice !== 0) {
     pnl = (((exitPrice - entryPrice) / entryPrice) * 100).toFixed(2);

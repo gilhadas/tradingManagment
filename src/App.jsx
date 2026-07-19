@@ -2,6 +2,10 @@ import { useState, useEffect } from "react";
 import { supabase } from "./lib/supabase";
 import { toRow, fromRow } from "./lib/tradeMap";
 import { parseIBKRCsv } from "./lib/ibkrParser";
+import { parseIBICsv } from "./lib/ibiParser";
+
+// ברוקר → פרסר CSV; ברוקר בלי פרסר (Blink) לא מציג כפתור ייבוא.
+const CSV_PARSERS = { IBKR: parseIBKRCsv, IBI: parseIBICsv };
 import Login from "./components/Login";
 
 const STORAGE_KEY = "trade_journal_v1";
@@ -663,22 +667,24 @@ export default function App() {
     e.target.value = "";
   };
 
-  const handleImportIBKR = (e) => {
+  const handleImportCsv = (e) => {
     const file = e.target.files[0];
     if (!file) return;
+    const parser = CSV_PARSERS[broker];
+    if (!parser) return;
     const reader = new FileReader();
     reader.onload = async (ev) => {
       try {
-        const parsed = parseIBKRCsv(ev.target.result);
+        const parsed = parser(ev.target.result);
         if (parsed.length === 0) {
           alert("No Buy/Sell transactions found in this file.");
           return;
         }
-        const rows = parsed.map(t => toRow({ ...t, broker: "IBKR" }, session.user.id));
+        const rows = parsed.map(t => toRow({ ...t, broker }, session.user.id));
         const { error } = await supabase.from("trades").insert(rows);
         if (error) throw error;
         setTrades(await fetchTrades());
-        alert(`Imported ${parsed.length} trade${parsed.length !== 1 ? "s" : ""} from IBKR CSV.\nEntry/exit prices are pre-filled — add your notes, lessons and setup type manually.`);
+        alert(`Imported ${parsed.length} trade${parsed.length !== 1 ? "s" : ""} from ${broker} CSV.\nEntry/exit prices are pre-filled — add your notes, lessons and setup type manually.`);
       } catch (err) {
         alert("Import error: " + (err.message || "Invalid file"));
       }
@@ -778,11 +784,11 @@ export default function App() {
               <option key={b} value={b}>{b}</option>
             ))}
           </select>
-          {/* CSV import — only IBKR has a parser so far */}
-          {broker === "IBKR" && (
-            <label style={{ ...btnStyle, color: "#7aaacc" }} title="Import IBKR Transaction History CSV">
+          {/* CSV import — shown only for brokers we have a parser for */}
+          {CSV_PARSERS[broker] && (
+            <label style={{ ...btnStyle, color: "#7aaacc" }} title={`Import ${broker} transaction-history CSV`}>
               ↑ CSV
-              <input type="file" accept=".csv" onChange={handleImportIBKR} style={{ display: "none" }} />
+              <input type="file" accept=".csv" onChange={handleImportCsv} style={{ display: "none" }} />
             </label>
           )}
           {/* Export */}
