@@ -40,6 +40,12 @@ const tradePositionValue = (t) => {
 const fmtUsd = (n, signed = false) =>
   `${n < 0 ? "-" : signed && n > 0 ? "+" : ""}$${Math.abs(n).toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
 
+// "2026-07" -> "July 2026"
+const monthLabel = (ym) => {
+  const [y, m] = ym.split("-");
+  return new Date(+y, +m - 1, 1).toLocaleString("en-US", { month: "long", year: "numeric" });
+};
+
 const emptyTrade = () => ({
   date: new Date().toISOString().slice(0, 10),
   ticker: "",
@@ -517,6 +523,8 @@ export default function App() {
   const [editing, setEditing] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [error, setError] = useState("");
+  // "latest" = החודש האחרון שיש בו טריידים (ברירת מחדל), "all", או "YYYY-MM".
+  const [period, setPeriod] = useState("latest");
 
   // מעקב אחר session: טעינה ראשונית + הקשבה לשינויי התחברות/יציאה.
   useEffect(() => {
@@ -678,6 +686,15 @@ export default function App() {
   if (!authReady) return null;
   if (!session) return <Login />;
 
+  // חודשים ייחודיים מתוך הטריידים, מהחדש לישן; ברירת המחדל היא האחרון שבהם.
+  const months = [...new Set(trades.map(t => (t.date || "").slice(0, 7)).filter(m => m.length === 7))]
+    .sort()
+    .reverse();
+  const effectivePeriod = period === "latest" ? (months[0] || "all") : period;
+  const visibleTrades = effectivePeriod === "all"
+    ? trades
+    : trades.filter(t => (t.date || "").startsWith(effectivePeriod));
+
   const btnStyle = {
     padding: "10px 16px",
     background: "none",
@@ -771,7 +788,31 @@ export default function App() {
           }}>{error}</div>
         )}
 
-        <Stats trades={trades} />
+        {months.length > 0 && <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
+          <select
+            value={effectivePeriod}
+            onChange={e => setPeriod(e.target.value)}
+            style={{
+              background: "#0d0d0d",
+              border: "1px solid #2a2a2a",
+              borderRadius: 2,
+              padding: "7px 10px",
+              color: "#e8e8e8",
+              fontFamily: "'IBM Plex Mono', monospace",
+              fontSize: 12,
+              letterSpacing: "0.05em",
+              outline: "none",
+              cursor: "pointer",
+            }}
+          >
+            {months.map(m => (
+              <option key={m} value={m}>{monthLabel(m)}</option>
+            ))}
+            <option value="all">All time</option>
+          </select>
+        </div>}
+
+        <Stats trades={visibleTrades} />
 
         {showForm && editing && (
           <div style={{ marginBottom: 24 }}>
@@ -791,7 +832,7 @@ export default function App() {
           </div>
         )}
 
-        {!loading && trades.length === 0 && !showForm && (
+        {!loading && visibleTrades.length === 0 && !showForm && (
           <div style={{
             textAlign: "center",
             padding: "60px 20px",
@@ -803,7 +844,7 @@ export default function App() {
           </div>
         )}
 
-        {trades.map(t => (
+        {visibleTrades.map(t => (
           <TradeCard key={t.id} trade={t} onEdit={handleEdit} onDelete={handleDelete} />
         ))}
       </div>
