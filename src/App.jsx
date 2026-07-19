@@ -491,6 +491,168 @@ function Stats({ trades }) {
   );
 }
 
+const RANGE_KEYS = ["1M", "3M", "6M", "YTD", "1Y", "All"];
+
+// תאריך חיתוך לטווח הנבחר; null = בלי חיתוך.
+function rangeCutoff(key) {
+  const now = new Date();
+  if (key === "All") return null;
+  if (key === "YTD") return `${now.getFullYear()}-01-01`;
+  const months = { "1M": 1, "3M": 3, "6M": 6, "1Y": 12 }[key];
+  const d = new Date(now.getFullYear(), now.getMonth() - months, now.getDate());
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+// צעד "עגול" (1/2/5×10^n) לקווי הרשת של ציר ה-Y.
+function niceStep(span, target = 5) {
+  const raw = span / target;
+  const pow = Math.pow(10, Math.floor(Math.log10(raw)));
+  for (const m of [1, 2, 5, 10]) if (m * pow >= raw) return m * pow;
+  return 10 * pow;
+}
+
+// גרף P&L מצטבר (דולרים, טריידים סגורים בלבד) עם בחירת טווח זמן.
+export function PerformanceView({ trades }) {
+  const [range, setRange] = useState("3M");
+  const [hover, setHover] = useState(null);
+
+  const cutoff = rangeCutoff(range);
+  const closed = trades.filter(t =>
+    tradeDollarPnl(t) != null && t.date && (!cutoff || t.date >= cutoff));
+
+  // סכום יומי -> נקודות מצטברות לפי תאריך
+  const byDate = {};
+  for (const t of closed) byDate[t.date] = (byDate[t.date] || 0) + tradeDollarPnl(t);
+  const dates = Object.keys(byDate).sort();
+  let cum = 0;
+  const points = dates.map(d => { cum += byDate[d]; return { date: d, day: byDate[d], cum }; });
+
+  const winners = closed.filter(t => tradeDollarPnl(t) > 0).length;
+  const periodPnl = points.length ? points[points.length - 1].cum : 0;
+
+  const tiles = [
+    { label: "Period P&L", value: fmtUsd(periodPnl, true), color: periodPnl > 0 ? "#4caf7d" : periodPnl < 0 ? "#e05252" : "#e8c84a" },
+    { label: "Closed Trades", value: closed.length },
+    { label: "Win Rate", value: closed.length ? `${Math.round((winners / closed.length) * 100)}%` : "—" },
+  ];
+
+  // גיאומטריית ה-SVG
+  const W = 800, H = 300, padL = 64, padR = 20, padT = 16, padB = 34;
+  const t0 = points.length ? Date.parse(points[0].date) : 0;
+  const t1 = points.length ? Date.parse(points[points.length - 1].date) : 1;
+  const yMin = Math.min(0, ...points.map(p => p.cum));
+  const yMax = Math.max(0, ...points.map(p => p.cum));
+  const ySpan = (yMax - yMin) || 1;
+  const xFor = p => t1 === t0 ? (padL + (W - padL - padR) / 2)
+    : padL + ((Date.parse(p.date) - t0) / (t1 - t0)) * (W - padL - padR);
+  const yFor = v => padT + (1 - (v - yMin) / ySpan) * (H - padT - padB);
+
+  const step = niceStep(ySpan);
+  const yTicks = [];
+  for (let v = Math.ceil(yMin / step) * step; v <= yMax + 1e-9; v += step) yTicks.push(v);
+
+  const xLabelIdx = points.length <= 6
+    ? points.map((_, i) => i)
+    : Array.from({ length: 6 }, (_, i) => Math.round(i * (points.length - 1) / 5));
+  const shortDate = d => `${+d.slice(5, 7)}/${+d.slice(8, 10)}`;
+
+  const linePath = points.map((p, i) => `${i ? "L" : "M"}${xFor(p).toFixed(1)},${yFor(p.cum).toFixed(1)}`).join(" ");
+
+  const onMove = (e) => {
+    if (!points.length) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * W;
+    let best = 0, bestDist = Infinity;
+    points.forEach((p, i) => {
+      const d = Math.abs(xFor(p) - x);
+      if (d < bestDist) { bestDist = d; best = i; }
+    });
+    setHover(best);
+  };
+
+  const hp = hover != null ? points[hover] : null;
+  const tooltipLeft = hp ? xFor(hp) > W - 190 : false;
+
+  return (
+    <div>
+      {/* בחירת טווח זמן */}
+      <div style={{ display: "flex", gap: 6, marginBottom: 16 }}>
+        {RANGE_KEYS.map(k => (
+          <Tag key={k} label={k} selected={range === k} onClick={() => { setRange(k); setHover(null); }} />
+        ))}
+      </div>
+
+      <div style={{
+        display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 1,
+        background: "#111", border: "1px solid #1a1a1a", borderRadius: 3, overflow: "hidden", marginBottom: 24,
+      }}>
+        {tiles.map(({ label, value, color }) => (
+          <div key={label} style={{ padding: "14px 16px", background: "#080808" }}>
+            <div style={{ fontSize: 10, color: "#888", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 6 }}>{label}</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: color || "#e8c84a" }}>{value}</div>
+          </div>
+        ))}
+      </div>
+
+      {points.length === 0 ? (
+        <div style={{ textAlign: "center", padding: "60px 20px", color: "#888", fontSize: 13, letterSpacing: "0.08em" }}>
+          No closed trades in this range
+        </div>
+      ) : (
+        <div style={{ background: "#080808", border: "1px solid #1e1e1e", borderRadius: 4, padding: "18px 12px 8px" }}>
+          <div style={{ fontSize: 10, color: "#888", letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 10px 14px" }}>
+            Cumulative P&L ($)
+          </div>
+          <svg
+            viewBox={`0 0 ${W} ${H}`}
+            style={{ width: "100%", display: "block", cursor: "crosshair" }}
+            onMouseMove={onMove}
+            onMouseLeave={() => setHover(null)}
+          >
+            {/* רשת + ציר Y */}
+            {yTicks.map(v => (
+              <g key={v}>
+                <line x1={padL} x2={W - padR} y1={yFor(v)} y2={yFor(v)} stroke="#1a1a1a" strokeWidth="1" />
+                <text x={padL - 8} y={yFor(v) + 3.5} textAnchor="end" fontSize="10" fill="#888"
+                  fontFamily="'IBM Plex Mono', monospace">{fmtUsd(v)}</text>
+              </g>
+            ))}
+            {/* קו האפס */}
+            {yMin < 0 && yMax > 0 && (
+              <line x1={padL} x2={W - padR} y1={yFor(0)} y2={yFor(0)} stroke="#444" strokeWidth="1" strokeDasharray="4 4" />
+            )}
+            {/* תוויות ציר X */}
+            {xLabelIdx.map(i => (
+              <text key={i} x={xFor(points[i])} y={H - 10} textAnchor="middle" fontSize="10" fill="#888"
+                fontFamily="'IBM Plex Mono', monospace">{shortDate(points[i].date)}</text>
+            ))}
+            {/* הקו עצמו */}
+            <path d={linePath} fill="none" stroke="#e8c84a" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+            {/* שכבת hover: קו אנכי + נקודה + tooltip */}
+            {hp && (
+              <g pointerEvents="none">
+                <line x1={xFor(hp)} x2={xFor(hp)} y1={padT} y2={H - padB} stroke="#333" strokeWidth="1" />
+                <circle cx={xFor(hp)} cy={yFor(hp.cum)} r="4.5" fill="#e8c84a" stroke="#080808" strokeWidth="2" />
+                <g transform={`translate(${tooltipLeft ? xFor(hp) - 182 : xFor(hp) + 10}, ${Math.max(padT, Math.min(yFor(hp.cum) - 24, H - padB - 62))})`}>
+                  <rect width="172" height="58" rx="3" fill="#0d0d0d" stroke="#2a2a2a" />
+                  <text x="10" y="17" fontSize="10" fill="#888" fontFamily="'IBM Plex Mono', monospace">{hp.date}</text>
+                  <text x="10" y="33" fontSize="11" fill="#e8e8e8" fontFamily="'IBM Plex Mono', monospace">
+                    Total: {fmtUsd(hp.cum, true)}
+                  </text>
+                  <text x="10" y="49" fontSize="11" fill={hp.day > 0 ? "#4caf7d" : hp.day < 0 ? "#e05252" : "#888"}
+                    fontFamily="'IBM Plex Mono', monospace">
+                    Day: {fmtUsd(hp.day, true)}
+                  </text>
+                </g>
+              </g>
+            )}
+          </svg>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // טוען את כל הטריידים של המשתמש מ-Supabase, ממוין מהחדש לישן.
 async function fetchTrades() {
   const { data, error } = await supabase
@@ -533,6 +695,7 @@ export default function App() {
   const [error, setError] = useState("");
   // "latest" = החודש האחרון שיש בו טריידים (ברירת מחדל), "all", או "YYYY-MM".
   const [period, setPeriod] = useState("latest");
+  const [view, setView] = useState("journal");
   // הברוקר הנבחר קובע גם את הסינון וגם את התיוג של טריידים חדשים/מיובאים.
   const [broker, setBroker] = useState(() => {
     const saved = localStorage.getItem(BROKER_KEY);
@@ -810,6 +973,28 @@ export default function App() {
         </div>
       </div>
 
+      {/* Tabs */}
+      <div style={{ display: "flex", gap: 26, padding: "12px 32px 0", borderBottom: "1px solid #1a1a1a", background: "#030303" }}>
+        {[["journal", "Journal"], ["performance", "Performance"]].map(([key, label]) => (
+          <button
+            key={key}
+            onClick={() => setView(key)}
+            style={{
+              background: "none",
+              border: "none",
+              borderBottom: view === key ? "2px solid #e8c84a" : "2px solid transparent",
+              color: view === key ? "#e8c84a" : "#888",
+              padding: "2px 2px 10px",
+              fontFamily: "'IBM Plex Mono', monospace",
+              fontSize: 12,
+              letterSpacing: "0.14em",
+              textTransform: "uppercase",
+              cursor: "pointer",
+            }}
+          >{label}</button>
+        ))}
+      </div>
+
       <div style={{ maxWidth: 900, margin: "0 auto", padding: "28px 32px" }}>
         {error && (
           <div style={{
@@ -823,6 +1008,9 @@ export default function App() {
           }}>{error}</div>
         )}
 
+        {view === "performance" && <PerformanceView trades={brokerTrades} />}
+
+        {view === "journal" && <>
         {months.length > 0 && <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
           <select
             value={effectivePeriod}
@@ -895,6 +1083,7 @@ export default function App() {
             <TradeCard key={t.id} trade={t} onEdit={handleEdit} onDelete={handleDelete} />
           )
         ))}
+        </>}
       </div>
     </div>
   );
