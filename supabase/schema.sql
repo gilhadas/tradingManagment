@@ -7,6 +7,7 @@ create table if not exists public.trades (
   trade_date date,
   ticker text,
   direction text,
+  broker text,
   setup_type text,
   catalyst text,
   quantity numeric,

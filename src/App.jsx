@@ -7,6 +7,9 @@ import Login from "./components/Login";
 const STORAGE_KEY = "trade_journal_v1";
 const MIGRATED_KEY = "trade_journal_migrated";
 
+const BROKERS = ["IBKR", "IBI", "Blink"];
+const BROKER_KEY = "trade_journal_broker";
+
 const SETUP_TYPES = ["News/Catalyst", "Breakout", "Reversal", "Continuation", "VWAP", "Other"];
 const EMOTIONS = ["FOMO", "Confident", "Hesitant", "Neutral", "Greedy", "Fearful"];
 const MISTAKES = [
@@ -46,10 +49,11 @@ const monthLabel = (ym) => {
   return new Date(+y, +m - 1, 1).toLocaleString("en-US", { month: "long", year: "numeric" });
 };
 
-const emptyTrade = () => ({
+const emptyTrade = (broker = "IBKR") => ({
   date: new Date().toISOString().slice(0, 10),
   ticker: "",
   direction: "Long",
+  broker,
   setupType: "",
   catalyst: "",
   quantity: "",
@@ -525,6 +529,17 @@ export default function App() {
   const [error, setError] = useState("");
   // "latest" = החודש האחרון שיש בו טריידים (ברירת מחדל), "all", או "YYYY-MM".
   const [period, setPeriod] = useState("latest");
+  // הברוקר הנבחר קובע גם את הסינון וגם את התיוג של טריידים חדשים/מיובאים.
+  const [broker, setBroker] = useState(() => {
+    const saved = localStorage.getItem(BROKER_KEY);
+    return BROKERS.includes(saved) ? saved : "IBKR";
+  });
+
+  const changeBroker = (b) => {
+    setBroker(b);
+    setPeriod("latest");
+    localStorage.setItem(BROKER_KEY, b);
+  };
 
   // מעקב אחר session: טעינה ראשונית + הקשבה לשינויי התחברות/יציאה.
   useEffect(() => {
@@ -563,7 +578,7 @@ export default function App() {
   }, [session]);
 
   const handleNew = () => {
-    setEditing(emptyTrade());
+    setEditing(emptyTrade(broker));
     setShowForm(true);
   };
 
@@ -659,7 +674,7 @@ export default function App() {
           alert("No Buy/Sell transactions found in this file.");
           return;
         }
-        const rows = parsed.map(t => toRow(t, session.user.id));
+        const rows = parsed.map(t => toRow({ ...t, broker: "IBKR" }, session.user.id));
         const { error } = await supabase.from("trades").insert(rows);
         if (error) throw error;
         setTrades(await fetchTrades());
@@ -686,14 +701,15 @@ export default function App() {
   if (!authReady) return null;
   if (!session) return <Login />;
 
-  // חודשים ייחודיים מתוך הטריידים, מהחדש לישן; ברירת המחדל היא האחרון שבהם.
-  const months = [...new Set(trades.map(t => (t.date || "").slice(0, 7)).filter(m => m.length === 7))]
+  // מסננים קודם לפי ברוקר, ואז נגזרים החודשים והסינון החודשי.
+  const brokerTrades = trades.filter(t => (t.broker || "IBKR") === broker);
+  const months = [...new Set(brokerTrades.map(t => (t.date || "").slice(0, 7)).filter(m => m.length === 7))]
     .sort()
     .reverse();
   const effectivePeriod = period === "latest" ? (months[0] || "all") : period;
   const visibleTrades = effectivePeriod === "all"
-    ? trades
-    : trades.filter(t => (t.date || "").startsWith(effectivePeriod));
+    ? brokerTrades
+    : brokerTrades.filter(t => (t.date || "").startsWith(effectivePeriod));
 
   const btnStyle = {
     padding: "10px 16px",
@@ -751,11 +767,24 @@ export default function App() {
             ↑ Import
             <input type="file" accept=".json" onChange={handleImport} style={{ display: "none" }} />
           </label>
-          {/* Import IBKR CSV */}
-          <label style={{ ...btnStyle, color: "#7aaacc" }} title="Import IBKR Transaction History CSV">
-            ↑ IBKR
-            <input type="file" accept=".csv" onChange={handleImportIBKR} style={{ display: "none" }} />
-          </label>
+          {/* Broker selector — controls which trades are shown and how imports are tagged */}
+          <select
+            value={broker}
+            onChange={e => changeBroker(e.target.value)}
+            title="Broker"
+            style={{ ...btnStyle, color: "#7aaacc", background: "#030303", outline: "none" }}
+          >
+            {BROKERS.map(b => (
+              <option key={b} value={b}>{b}</option>
+            ))}
+          </select>
+          {/* CSV import — only IBKR has a parser so far */}
+          {broker === "IBKR" && (
+            <label style={{ ...btnStyle, color: "#7aaacc" }} title="Import IBKR Transaction History CSV">
+              ↑ CSV
+              <input type="file" accept=".csv" onChange={handleImportIBKR} style={{ display: "none" }} />
+            </label>
+          )}
           {/* Export */}
           <button onClick={handleExport} style={btnStyle}>↓ Export</button>
           {/* Sign out */}
