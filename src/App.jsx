@@ -814,7 +814,8 @@ export default function App() {
 
         <Stats trades={visibleTrades} />
 
-        {showForm && editing && (
+        {/* טופס טרייד חדש נפתח למעלה; עריכה נפתחת במקום הכרטיס עצמו ברשימה. */}
+        {showForm && editing && !editing.id && (
           <div style={{ marginBottom: 24 }}>
             <TradeForm
               trade={editing}
@@ -845,7 +846,19 @@ export default function App() {
         )}
 
         {visibleTrades.map(t => (
-          <TradeCard key={t.id} trade={t} onEdit={handleEdit} onDelete={handleDelete} />
+          showForm && editing && editing.id === t.id ? (
+            <div key={t.id} style={{ marginBottom: 10 }}>
+              <TradeForm
+                trade={editing}
+                onChange={handleChange}
+                onSave={handleSave}
+                onCancel={handleCancel}
+                saving={saving}
+              />
+            </div>
+          ) : (
+            <TradeCard key={t.id} trade={t} onEdit={handleEdit} onDelete={handleDelete} />
+          )
         ))}
       </div>
     </div>
