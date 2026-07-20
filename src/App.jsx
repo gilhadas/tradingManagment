@@ -658,6 +658,176 @@ export function PerformanceView({ trades }) {
   );
 }
 
+// טאב אנליטיקות בסגנון TradeZella: פרופיט-פקטור, ממוצעי רווח/הפסד,
+// לוח שנה יומי של P&L, ופילוחים לפי יום בשבוע ולפי טיקר.
+export function AnalyticsView({ trades }) {
+  const [range, setRange] = useState("All");
+
+  const cutoff = rangeCutoff(range);
+  const closed = trades.filter(t =>
+    tradeDollarPnl(t) != null && t.date && (!cutoff || t.date >= cutoff));
+  const pnls = closed.map(tradeDollarPnl);
+
+  const wins = pnls.filter(p => p > 0);
+  const losses = pnls.filter(p => p < 0);
+  const grossWin = wins.reduce((s, p) => s + p, 0);
+  const grossLoss = -losses.reduce((s, p) => s + p, 0);
+  const profitFactor = grossLoss > 0 ? grossWin / grossLoss : null;
+  const avgWin = wins.length ? grossWin / wins.length : null;
+  const avgLoss = losses.length ? grossLoss / losses.length : null;
+  const expectancy = pnls.length ? pnls.reduce((s, p) => s + p, 0) / pnls.length : null;
+
+  const tiles = [
+    { label: "Profit Factor", value: profitFactor != null ? profitFactor.toFixed(2) : "—", color: profitFactor != null ? (profitFactor >= 1 ? "#4caf7d" : "#e05252") : undefined },
+    { label: "Expectancy / Trade", value: expectancy != null ? fmtUsd(expectancy, true) : "—", color: expectancy > 0 ? "#4caf7d" : expectancy < 0 ? "#e05252" : undefined },
+    { label: "Avg Win", value: avgWin != null ? fmtUsd(avgWin, true) : "—", color: "#4caf7d" },
+    { label: "Avg Loss", value: avgLoss != null ? fmtUsd(-avgLoss, true) : "—", color: "#e05252" },
+  ];
+
+  // ── לוח שנה יומי ──
+  const byDate = {};
+  for (const t of closed) {
+    (byDate[t.date] ||= { pnl: 0, count: 0 });
+    byDate[t.date].pnl += tradeDollarPnl(t);
+    byDate[t.date].count += 1;
+  }
+  const tradeMonths = [...new Set(Object.keys(byDate).map(d => d.slice(0, 7)))].sort();
+  const [calMonth, setCalMonth] = useState(() => tradeMonths[tradeMonths.length - 1] || new Date().toISOString().slice(0, 7));
+  const shiftMonth = (delta) => {
+    const [y, m] = calMonth.split("-").map(Number);
+    const d = new Date(y, m - 1 + delta, 1);
+    setCalMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+  };
+  const [cy, cm] = calMonth.split("-").map(Number);
+  const firstDow = new Date(cy, cm - 1, 1).getDay();
+  const daysInMonth = new Date(cy, cm, 0).getDate();
+  const monthDays = Array.from({ length: daysInMonth }, (_, i) => {
+    const date = `${calMonth}-${String(i + 1).padStart(2, "0")}`;
+    return { day: i + 1, ...byDate[date] };
+  });
+  const monthMax = Math.max(1, ...monthDays.filter(d => d.pnl != null).map(d => Math.abs(d.pnl)));
+  const monthTotal = monthDays.reduce((s, d) => s + (d.pnl || 0), 0);
+
+  const dayCell = (d) => {
+    const has = d.pnl != null;
+    const alpha = has ? 0.12 + 0.45 * (Math.abs(d.pnl) / monthMax) : 0;
+    const bg = !has ? "#0a0a0a" : d.pnl > 0 ? `rgba(76,175,125,${alpha})` : d.pnl < 0 ? `rgba(224,82,82,${alpha})` : "#0d0d0d";
+    return (
+      <div key={d.day} style={{ background: bg, border: "1px solid #1a1a1a", borderRadius: 2, minHeight: 52, padding: "4px 6px" }}
+        title={has ? `${d.count} trade${d.count > 1 ? "s" : ""}` : undefined}>
+        <div style={{ fontSize: 9, color: "#888" }}>{d.day}</div>
+        {has && (
+          <div style={{ fontSize: 11, fontWeight: 600, marginTop: 4, color: d.pnl > 0 ? "#4caf7d" : d.pnl < 0 ? "#e05252" : "#888" }}>
+            {fmtUsd(d.pnl, true)}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // ── פילוחים ──
+  const byWeekday = Array.from({ length: 7 }, () => 0);
+  for (const [date, v] of Object.entries(byDate)) byWeekday[new Date(date + "T12:00:00").getDay()] += v.pnl;
+  const weekdayMax = Math.max(1, ...byWeekday.map(Math.abs));
+  const weekdayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+  const byTicker = {};
+  for (const t of closed) byTicker[t.ticker] = (byTicker[t.ticker] || 0) + tradeDollarPnl(t);
+  const tickers = Object.entries(byTicker).sort((a, b) => b[1] - a[1]);
+  const topWinners = tickers.filter(([, v]) => v > 0).slice(0, 5);
+  const topLosers = tickers.filter(([, v]) => v < 0).reverse().slice(0, 5);
+
+  const sectionTitle = (text) => (
+    <div style={{ fontSize: 10, color: "#888", letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: 10 }}>{text}</div>
+  );
+  const panelStyle = { background: "#080808", border: "1px solid #1e1e1e", borderRadius: 4, padding: 16 };
+
+  const tickerList = (list, empty) => list.length === 0
+    ? <div style={{ color: "#555", fontSize: 12 }}>{empty}</div>
+    : list.map(([tk, v]) => (
+      <div key={tk} style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderBottom: "1px solid #141414", fontSize: 12 }}>
+        <span style={{ color: "#e8c84a", fontWeight: 600 }}>{tk}</span>
+        <span style={{ color: v > 0 ? "#4caf7d" : "#e05252", fontWeight: 600 }}>{fmtUsd(v, true)}</span>
+      </div>
+    ));
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 16 }}>
+        {RANGE_KEYS.map(k => (
+          <Tag key={k} label={k} selected={range === k} onClick={() => setRange(k)} />
+        ))}
+      </div>
+
+      <div style={{
+        display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 1,
+        background: "#111", border: "1px solid #1a1a1a", borderRadius: 3, overflow: "hidden", marginBottom: 24,
+      }}>
+        {tiles.map(({ label, value, color }) => (
+          <div key={label} style={{ padding: "14px 16px", background: "#080808" }}>
+            <div style={{ fontSize: 10, color: "#888", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 6 }}>{label}</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: color || "#e8c84a" }}>{value}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* לוח שנה */}
+      <div style={{ ...panelStyle, marginBottom: 24 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          {sectionTitle(`Daily P&L — ${monthLabel(calMonth)}`)}
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: monthTotal > 0 ? "#4caf7d" : monthTotal < 0 ? "#e05252" : "#888" }}>
+              {fmtUsd(monthTotal, true)}
+            </span>
+            <button onClick={() => shiftMonth(-1)} style={{ background: "none", border: "1px solid #2a2a2a", color: "#aaa", borderRadius: 2, cursor: "pointer", padding: "2px 8px" }}>‹</button>
+            <button onClick={() => shiftMonth(1)} style={{ background: "none", border: "1px solid #2a2a2a", color: "#aaa", borderRadius: 2, cursor: "pointer", padding: "2px 8px" }}>›</button>
+          </div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4, marginBottom: 4 }}>
+          {weekdayNames.map(w => (
+            <div key={w} style={{ fontSize: 9, color: "#555", textAlign: "center", letterSpacing: "0.1em" }}>{w.toUpperCase()}</div>
+          ))}
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4 }}>
+          {Array.from({ length: firstDow }, (_, i) => <div key={`e${i}`} />)}
+          {monthDays.map(dayCell)}
+        </div>
+      </div>
+
+      {/* פילוחים */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16 }}>
+        <div style={panelStyle}>
+          {sectionTitle("P&L by Weekday")}
+          {weekdayNames.slice(0, 6).map((name, i) => (
+            <div key={name} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0" }}>
+              <span style={{ fontSize: 10, color: "#888", width: 28 }}>{name}</span>
+              <div style={{ flex: 1, height: 10, background: "#0d0d0d", borderRadius: 1, overflow: "hidden" }}>
+                <div style={{
+                  height: "100%",
+                  width: `${(Math.abs(byWeekday[i]) / weekdayMax) * 100}%`,
+                  background: byWeekday[i] > 0 ? "#4caf7d" : byWeekday[i] < 0 ? "#e05252" : "transparent",
+                  opacity: 0.75,
+                }} />
+              </div>
+              <span style={{ fontSize: 10, width: 64, textAlign: "right", color: byWeekday[i] > 0 ? "#4caf7d" : byWeekday[i] < 0 ? "#e05252" : "#555" }}>
+                {byWeekday[i] !== 0 ? fmtUsd(byWeekday[i], true) : "—"}
+              </span>
+            </div>
+          ))}
+        </div>
+        <div style={panelStyle}>
+          {sectionTitle("Top Winners")}
+          {tickerList(topWinners, "No winning tickers")}
+        </div>
+        <div style={panelStyle}>
+          {sectionTitle("Top Losers")}
+          {tickerList(topLosers, "No losing tickers")}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // טוען את כל הטריידים של המשתמש מ-Supabase, ממוין מהחדש לישן.
 async function fetchTrades() {
   const { data, error } = await supabase
@@ -980,7 +1150,7 @@ export default function App() {
 
       {/* Tabs */}
       <div style={{ display: "flex", gap: 26, padding: "12px 32px 0", borderBottom: "1px solid #1a1a1a", background: "#030303" }}>
-        {[["journal", "Journal"], ["performance", "Performance"]].map(([key, label]) => (
+        {[["journal", "Journal"], ["performance", "Performance"], ["analytics", "Analytics"]].map(([key, label]) => (
           <button
             key={key}
             onClick={() => setView(key)}
@@ -1014,6 +1184,7 @@ export default function App() {
         )}
 
         {view === "performance" && <PerformanceView trades={brokerTrades} />}
+        {view === "analytics" && <AnalyticsView trades={brokerTrades} />}
 
         {view === "journal" && <>
         {months.length > 0 && <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
