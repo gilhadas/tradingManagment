@@ -2,14 +2,16 @@ import { useState, useEffect } from "react";
 import { supabase } from "./lib/supabase";
 import { toRow, fromRow } from "./lib/tradeMap";
 import { parseIBKRCsv } from "./lib/ibkrParser";
-import { parseIBICsv } from "./lib/ibiParser";
-import { parseBlinkPdf } from "./lib/blinkParser";
+import { parseIBICsv, matchTransactions } from "./lib/ibiParser";
+import { parseBlinkFiles } from "./lib/blinkParser";
 
-// ברוקר → הגדרות ייבוא: סיומת, אופן קריאה (טקסט/בינארי) והפרסר.
+// ברוקר → הגדרות ייבוא: סיומות קבילות והפרסר (מקבל את רשימת הקבצים שנבחרו).
+// כל parse מחזיר { trades } לייבוא ישיר, או { transactions } שדורש סקירה
+// (OCR של צילומי מסך אינו מדויק). Blink מקבל גם כמה תמונות בבת אחת.
 const IMPORTERS = {
-  IBKR: { label: "CSV", accept: ".csv", binary: false, parse: parseIBKRCsv },
-  IBI: { label: "CSV", accept: ".csv", binary: false, parse: parseIBICsv },
-  Blink: { label: "PDF", accept: ".pdf", binary: true, parse: parseBlinkPdf },
+  IBKR: { label: "CSV", accept: ".csv", parse: async (files) => ({ trades: parseIBKRCsv(await files[0].text()) }) },
+  IBI: { label: "CSV", accept: ".csv", parse: async (files) => ({ trades: parseIBICsv(await files[0].text()) }) },
+  Blink: { label: "PDF/IMG", accept: ".pdf,.png,.jpg,.jpeg", multiple: true, parse: parseBlinkFiles },
 };
 import Login from "./components/Login";
 
@@ -859,6 +861,73 @@ async function migrateLocalTrades(userId, cloudCount) {
   return false;
 }
 
+// Review/edit table for OCR'd screenshot imports. Screenshots parse into
+// transactions (one Buy/Sell row each) that the user verifies against the
+// image and corrects before they're matched into trades. Nothing is saved
+// until Import is pressed.
+function ReviewImportModal({ txs, onConfirm, onCancel }) {
+  const [rows, setRows] = useState(txs);
+
+  const mono = "'IBM Plex Mono', monospace";
+  const cell = { background: "#0d0d0d", border: "1px solid #1e1e1e", borderRadius: 2, color: "#ddd", padding: "6px 8px", fontFamily: mono, fontSize: 13, width: "100%", boxSizing: "border-box" };
+
+  const update = (id, field, val) => setRows(rows.map(r => r._id === id ? { ...r, [field]: val } : r));
+  const remove = (id) => setRows(rows.filter(r => r._id !== id));
+  const addRow = () => setRows([...rows, { _id: Math.max(0, ...rows.map(r => r._id)) + 1, date: "", symbol: "", buy: true, qty: "", amount: "" }]);
+
+  return (
+    <div onClick={onCancel} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 20 }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#080808", border: "1px solid #2a2a2a", borderRadius: 6, width: "min(720px, 100%)", maxHeight: "88vh", display: "flex", flexDirection: "column" }}>
+        <div style={{ padding: "18px 20px 12px", borderBottom: "1px solid #1a1a1a" }}>
+          <div style={{ fontSize: 15, color: "#e8c84a", fontFamily: mono, letterSpacing: 0.5 }}>Review screenshot import</div>
+          <div style={{ fontSize: 12, color: "#888", marginTop: 6, lineHeight: 1.5 }}>
+            OCR isn't perfect — check each row against your screenshots, fix any wrong ticker/quantity/amount, and delete non-trade rows. Price per share is derived from amount ÷ quantity. Buys and sells are paired into trades on import.
+          </div>
+        </div>
+
+        <div style={{ overflow: "auto", padding: "8px 20px" }}>
+          <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: "0 4px", fontFamily: mono }}>
+            <thead>
+              <tr style={{ color: "#666", fontSize: 10, textAlign: "left" }}>
+                <th style={{ fontWeight: 400, padding: "0 6px" }}>DATE</th>
+                <th style={{ fontWeight: 400, padding: "0 6px" }}>TYPE</th>
+                <th style={{ fontWeight: 400, padding: "0 6px" }}>TICKER</th>
+                <th style={{ fontWeight: 400, padding: "0 6px" }}>QTY</th>
+                <th style={{ fontWeight: 400, padding: "0 6px" }}>AMOUNT $</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(r => (
+                <tr key={r._id}>
+                  <td style={{ padding: "0 3px" }}><input value={r.date} onChange={e => update(r._id, "date", e.target.value)} placeholder="YYYY-MM-DD" style={{ ...cell, width: 118 }} /></td>
+                  <td style={{ padding: "0 3px" }}>
+                    <button onClick={() => update(r._id, "buy", !r.buy)} style={{ ...cell, cursor: "pointer", color: r.buy ? "#4caf7d" : "#e05252", width: 64, textAlign: "center" }}>
+                      {r.buy ? "Buy" : "Sell"}
+                    </button>
+                  </td>
+                  <td style={{ padding: "0 3px" }}><input value={r.symbol} onChange={e => update(r._id, "symbol", e.target.value.toUpperCase())} style={{ ...cell, width: 76 }} /></td>
+                  <td style={{ padding: "0 3px" }}><input value={r.qty} onChange={e => update(r._id, "qty", e.target.value)} style={{ ...cell, width: 90 }} /></td>
+                  <td style={{ padding: "0 3px" }}><input value={r.amount} onChange={e => update(r._id, "amount", e.target.value)} style={{ ...cell, width: 100 }} /></td>
+                  <td style={{ padding: "0 3px" }}><button onClick={() => remove(r._id)} title="Remove row" style={{ background: "none", border: "none", color: "#666", cursor: "pointer", fontSize: 16, padding: "0 4px" }}>×</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <button onClick={addRow} style={{ background: "none", border: "1px solid #2a2a2a", color: "#888", borderRadius: 2, cursor: "pointer", padding: "6px 12px", fontFamily: mono, fontSize: 12, marginTop: 8 }}>+ Add row</button>
+        </div>
+
+        <div style={{ padding: "12px 20px", borderTop: "1px solid #1a1a1a", display: "flex", alignItems: "center", gap: 12 }}>
+          <span style={{ fontSize: 12, color: "#777", fontFamily: mono }}>{rows.length} transaction{rows.length !== 1 ? "s" : ""}</span>
+          <div style={{ flex: 1 }} />
+          <button onClick={onCancel} style={{ background: "none", border: "1px solid #2a2a2a", color: "#aaa", borderRadius: 3, cursor: "pointer", padding: "8px 18px", fontFamily: mono, fontSize: 13 }}>Cancel</button>
+          <button onClick={() => onConfirm(rows)} disabled={!rows.length} style={{ background: "#e8c84a", border: "none", color: "#000", borderRadius: 3, cursor: rows.length ? "pointer" : "default", opacity: rows.length ? 1 : 0.4, padding: "8px 18px", fontFamily: mono, fontSize: 13, fontWeight: 600 }}>Import →</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [session, setSession] = useState(null);
   const [authReady, setAuthReady] = useState(false);
@@ -867,6 +936,8 @@ export default function App() {
   const [saving, setSaving] = useState(false);
   const [editing, setEditing] = useState(null);
   const [showForm, setShowForm] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [reviewTxs, setReviewTxs] = useState(null); // OCR draft awaiting review, or null
   const [error, setError] = useState("");
   // "latest" = החודש האחרון שיש בו טריידים (ברירת מחדל), "all", או "YYYY-MM".
   const [period, setPeriod] = useState("latest");
@@ -1005,30 +1076,66 @@ export default function App() {
     e.target.value = "";
   };
 
-  const handleImportFile = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
+  // Writes parsed trades to Supabase and refreshes; shared by every import path.
+  const insertTrades = async (parsed, sourceLabel) => {
+    if (!parsed.length) {
+      alert("No Buy/Sell transactions found.");
+      return;
+    }
+    const rows = parsed.map(t => toRow({ ...t, broker }, session.user.id));
+    const { error } = await supabase.from("trades").insert(rows);
+    if (error) throw error;
+    setTrades(await fetchTrades());
+    alert(`Imported ${parsed.length} trade${parsed.length !== 1 ? "s" : ""} from ${broker} ${sourceLabel}.\nEntry/exit prices are pre-filled — add your notes, lessons and setup type manually.`);
+  };
+
+  const handleImportFile = async (e) => {
+    const files = Array.from(e.target.files);
+    e.target.value = "";
+    if (!files.length) return;
     const imp = IMPORTERS[broker];
     if (!imp) return;
-    const reader = new FileReader();
-    reader.onload = async (ev) => {
-      try {
-        const parsed = await imp.parse(ev.target.result);
-        if (parsed.length === 0) {
-          alert("No Buy/Sell transactions found in this file.");
-          return;
+    setImporting(true);
+    try {
+      const parsed = await imp.parse(files);
+      if (parsed.transactions) {
+        // OCR draft — let the user review/edit before anything is saved.
+        if (parsed.transactions.length === 0) {
+          alert("No transactions could be read from these images.\nTry clearer, full-screen screenshots.");
+        } else {
+          setReviewTxs(parsed.transactions.map((t, i) => ({ ...t, _id: i })));
         }
-        const rows = parsed.map(t => toRow({ ...t, broker }, session.user.id));
-        const { error } = await supabase.from("trades").insert(rows);
-        if (error) throw error;
-        setTrades(await fetchTrades());
-        alert(`Imported ${parsed.length} trade${parsed.length !== 1 ? "s" : ""} from ${broker} ${imp.label}.\nEntry/exit prices are pre-filled — add your notes, lessons and setup type manually.`);
-      } catch (err) {
-        alert("Import error: " + (err.message || "Invalid file"));
+      } else {
+        await insertTrades(parsed.trades, imp.label);
       }
-    };
-    if (imp.binary) reader.readAsArrayBuffer(file); else reader.readAsText(file);
-    e.target.value = "";
+    } catch (err) {
+      alert("Import error: " + (err.message || "Invalid file"));
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  // Confirm handler for the OCR review modal: derive prices, match into trades.
+  const handleConfirmReview = async (rows) => {
+    const txs = rows.map(r => ({
+      date: r.date,
+      symbol: (r.symbol || "").toUpperCase().trim(),
+      buy: r.buy,
+      qty: Math.abs(parseFloat(r.qty)) || 0,
+      price: (parseFloat(r.amount) && parseFloat(r.qty))
+        ? Math.abs(parseFloat(r.amount) / parseFloat(r.qty))
+        : 0,
+    })).filter(t => t.symbol && t.qty && t.price)
+      .sort((a, b) => a.date.localeCompare(b.date));
+    setReviewTxs(null);
+    setImporting(true);
+    try {
+      await insertTrades(matchTransactions(txs), "screenshots");
+    } catch (err) {
+      alert("Import error: " + (err.message || "Could not save"));
+    } finally {
+      setImporting(false);
+    }
   };
 
   const handleCancel = () => {
@@ -1079,6 +1186,13 @@ export default function App() {
         input::placeholder { color: #e8e8e8; opacity: 1; }
         textarea::placeholder { color: #e8e8e8; opacity: 1; }
       `}</style>
+      {reviewTxs && (
+        <ReviewImportModal
+          txs={reviewTxs}
+          onConfirm={handleConfirmReview}
+          onCancel={() => setReviewTxs(null)}
+        />
+      )}
       <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&display=swap" rel="stylesheet" />
 
       {/* Header */}
@@ -1124,9 +1238,9 @@ export default function App() {
           </select>
           {/* File import — shown only for brokers we have a parser for */}
           {IMPORTERS[broker] && (
-            <label style={{ ...btnStyle, color: "#7aaacc" }} title={`Import ${broker} transaction-history ${IMPORTERS[broker].label}`}>
-              ↑ {IMPORTERS[broker].label}
-              <input type="file" accept={IMPORTERS[broker].accept} onChange={handleImportFile} style={{ display: "none" }} />
+            <label style={{ ...btnStyle, color: "#7aaacc", opacity: importing ? 0.5 : 1 }} title={`Import ${broker} transaction-history ${IMPORTERS[broker].label}`}>
+              {importing ? "⏳ Importing…" : `↑ ${IMPORTERS[broker].label}`}
+              <input type="file" accept={IMPORTERS[broker].accept} multiple={!!IMPORTERS[broker].multiple} disabled={importing} onChange={handleImportFile} style={{ display: "none" }} />
             </label>
           )}
           {/* Export */}

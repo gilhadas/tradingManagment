@@ -4,3 +4,7 @@ dist
 .env
 .DS_Store
 *.log
+
+# tesseract.js OCR language models (downloaded at runtime from CDN)
+*.traineddata
+*.traineddata.gz
