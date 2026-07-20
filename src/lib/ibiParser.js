@@ -45,7 +45,13 @@ export function parseIBICsv(text) {
   }
 
   txs.sort((a, b) => a.ts - b.ts);
+  return matchTransactions(txs);
+}
 
+// ליבת ההתאמה המשותפת (IBI/Blink): מקבלת טרנזקציות ממוינות כרונולוגית
+// ({date, symbol, buy, qty, price}) ומחזירה רשומות יומן — קניות פותחות/מוסיפות
+// לפוזיציה, מכירות סוגרות מולה, מהחדש לישן.
+export function matchTransactions(txs) {
   // symbol → running long position; instance increments each time a position
   // reopens so same-day merges never span two separate round trips.
   const pos = {};

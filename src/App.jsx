@@ -3,9 +3,14 @@ import { supabase } from "./lib/supabase";
 import { toRow, fromRow } from "./lib/tradeMap";
 import { parseIBKRCsv } from "./lib/ibkrParser";
 import { parseIBICsv } from "./lib/ibiParser";
+import { parseBlinkPdf } from "./lib/blinkParser";
 
-// ברוקר → פרסר CSV; ברוקר בלי פרסר (Blink) לא מציג כפתור ייבוא.
-const CSV_PARSERS = { IBKR: parseIBKRCsv, IBI: parseIBICsv };
+// ברוקר → הגדרות ייבוא: סיומת, אופן קריאה (טקסט/בינארי) והפרסר.
+const IMPORTERS = {
+  IBKR: { label: "CSV", accept: ".csv", binary: false, parse: parseIBKRCsv },
+  IBI: { label: "CSV", accept: ".csv", binary: false, parse: parseIBICsv },
+  Blink: { label: "PDF", accept: ".pdf", binary: true, parse: parseBlinkPdf },
+};
 import Login from "./components/Login";
 
 const STORAGE_KEY = "trade_journal_v1";
@@ -830,15 +835,15 @@ export default function App() {
     e.target.value = "";
   };
 
-  const handleImportCsv = (e) => {
+  const handleImportFile = (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    const parser = CSV_PARSERS[broker];
-    if (!parser) return;
+    const imp = IMPORTERS[broker];
+    if (!imp) return;
     const reader = new FileReader();
     reader.onload = async (ev) => {
       try {
-        const parsed = parser(ev.target.result);
+        const parsed = await imp.parse(ev.target.result);
         if (parsed.length === 0) {
           alert("No Buy/Sell transactions found in this file.");
           return;
@@ -847,12 +852,12 @@ export default function App() {
         const { error } = await supabase.from("trades").insert(rows);
         if (error) throw error;
         setTrades(await fetchTrades());
-        alert(`Imported ${parsed.length} trade${parsed.length !== 1 ? "s" : ""} from ${broker} CSV.\nEntry/exit prices are pre-filled — add your notes, lessons and setup type manually.`);
+        alert(`Imported ${parsed.length} trade${parsed.length !== 1 ? "s" : ""} from ${broker} ${imp.label}.\nEntry/exit prices are pre-filled — add your notes, lessons and setup type manually.`);
       } catch (err) {
         alert("Import error: " + (err.message || "Invalid file"));
       }
     };
-    reader.readAsText(file);
+    if (imp.binary) reader.readAsArrayBuffer(file); else reader.readAsText(file);
     e.target.value = "";
   };
 
@@ -947,11 +952,11 @@ export default function App() {
               <option key={b} value={b}>{b}</option>
             ))}
           </select>
-          {/* CSV import — shown only for brokers we have a parser for */}
-          {CSV_PARSERS[broker] && (
-            <label style={{ ...btnStyle, color: "#7aaacc" }} title={`Import ${broker} transaction-history CSV`}>
-              ↑ CSV
-              <input type="file" accept=".csv" onChange={handleImportCsv} style={{ display: "none" }} />
+          {/* File import — shown only for brokers we have a parser for */}
+          {IMPORTERS[broker] && (
+            <label style={{ ...btnStyle, color: "#7aaacc" }} title={`Import ${broker} transaction-history ${IMPORTERS[broker].label}`}>
+              ↑ {IMPORTERS[broker].label}
+              <input type="file" accept={IMPORTERS[broker].accept} onChange={handleImportFile} style={{ display: "none" }} />
             </label>
           )}
           {/* Export */}
