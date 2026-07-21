@@ -69,20 +69,8 @@ export function parseBlinkLines(pages) {
   return matchTransactions(txs);
 }
 
-// App entry point: routes Blink files by type. A statement PDF has real text,
-// so it parses straight into trades ({ trades }). App screenshots go through
-// OCR, which is imperfect, so they return transactions for the user to review
-// and edit ({ transactions }) before being matched into trades.
-export async function parseBlinkFiles(files) {
-  if (/\.pdf$/i.test(files[0].name)) {
-    return { trades: await parseBlinkPdf(await files[0].arrayBuffer()) };
-  }
-  const { parseBlinkImages } = await import("./blinkImageParser.js");
-  return { transactions: await parseBlinkImages(files) };
-}
-
-// File → ArrayBuffer → trades. Loads pdfjs lazily so the (large) PDF engine
-// is fetched only when a Blink PDF import actually happens.
+// App entry point: File → ArrayBuffer → trades. Loads pdfjs lazily so the
+// (large) PDF engine is fetched only when a Blink import actually happens.
 export async function parseBlinkPdf(arrayBuffer) {
   const pdfjs = await import("pdfjs-dist");
   const worker = await import("pdfjs-dist/build/pdf.worker.min.mjs?url");
