@@ -28,6 +28,18 @@ create table if not exists public.trades (
 create index if not exists trades_user_date_idx
   on public.trades (user_id, trade_date desc);
 
+-- מזהה חיצוני לסנכרון אוטומטי (בוט DayTrade -> journal_sync.py).
+-- The bot derives external_id from the trade's CONTENT and upserts with
+-- `?on_conflict=user_id,external_id&Prefer: resolution=ignore-duplicates`, so a
+-- re-run or a restored backup can never create duplicate rows.
+alter table public.trades add column if not exists external_id text;
+
+-- Deliberately NOT a partial index: PostgREST's ?on_conflict= cannot infer a
+-- conflict target against `where external_id is not null`. Postgres treats NULLs
+-- as distinct, so every manually-entered row (external_id null) is unaffected.
+create unique index if not exists trades_user_external_uidx
+  on public.trades (user_id, external_id);
+
 alter table public.trades enable row level security;
 
 -- מדיניות גישה: משתמש מחובר ניגש אך ורק לשורות שלו

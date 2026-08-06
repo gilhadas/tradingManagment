@@ -16,7 +16,10 @@ import Login from "./components/Login";
 const STORAGE_KEY = "trade_journal_v1";
 const MIGRATED_KEY = "trade_journal_migrated";
 
-const BROKERS = ["IBKR", "IBI", "Blink"];
+// "DayTrade" = rows pushed automatically by the DayTrade bot's journal_sync.py.
+// This list is a hard filter (see brokerTrades below) — a row whose broker is not
+// here is fetched from Supabase and then never rendered anywhere.
+const BROKERS = ["IBKR", "IBI", "Blink", "DayTrade"];
 const BROKER_KEY = "trade_journal_broker";
 
 const SETUP_TYPES = ["News/Catalyst", "Breakout", "Reversal", "Continuation", "VWAP", "Other"];
