@@ -197,8 +197,8 @@ function TradeCard({ trade, onEdit, onDelete }) {
       padding: "14px 16px",
       marginBottom: 10,
       background: "#0a0a0a",
-      cursor: "pointer",
-    }} onClick={() => onEdit(trade)}>
+      cursor: onEdit ? "pointer" : "default",
+    }} onClick={onEdit ? () => onEdit(trade) : undefined}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
           <span style={{
@@ -221,6 +221,14 @@ function TradeCard({ trade, onEdit, onDelete }) {
             fontFamily: "'IBM Plex Mono', monospace",
             letterSpacing: "0.08em",
           }}>{trade.date}</span>
+          {trade.exitDate && trade.exitDate !== trade.date && (
+            <span style={{
+              fontSize: 10,
+              color: "#666",
+              fontFamily: "'IBM Plex Mono', monospace",
+              letterSpacing: "0.08em",
+            }} title="Exit date">→ {trade.exitDate}</span>
+          )}
           {trade.setupType && (
             <span style={{
               fontSize: 10,
@@ -242,9 +250,11 @@ function TradeCard({ trade, onEdit, onDelete }) {
             }}>{fmtUsd(dollarPnl, true)}</span>
           )}
           <PnlBadge pnl={trade.pnl} />
-          <button onClick={e => { e.stopPropagation(); onDelete(trade.id); }} style={{
-            background: "none", border: "none", color: "#777", cursor: "pointer", fontSize: 14, padding: "0 4px"
-          }}>✕</button>
+          {onDelete && (
+            <button onClick={e => { e.stopPropagation(); onDelete(trade.id); }} style={{
+              background: "none", border: "none", color: "#777", cursor: "pointer", fontSize: 14, padding: "0 4px"
+            }}>✕</button>
+          )}
         </div>
       </div>
       {trade.lesson && (
@@ -365,6 +375,12 @@ function TradeForm({ trade, onChange, onSave, onCancel, saving }) {
         </Field>
         <Field label="Exit Date">
           <Input type="date" value={trade.exitDate} onChange={v => onChange("exitDate", v)} />
+          {/* Empty = genuinely not recorded (trade predates this field, or still open) —
+              not a fake/computed value. The blank box below is the browser's own
+              empty-date placeholder, not real data. */}
+          {!trade.exitDate && (
+            <div style={{ fontSize: 10, color: "#555", marginTop: 4 }}>Not recorded — set manually if known</div>
+          )}
         </Field>
       </div>
 
@@ -838,13 +854,18 @@ export function AnalyticsView({ trades }) {
       </div>
 
       {selectedDate && (
-        <DayTradesModal date={selectedDate} trades={selectedDayTrades} onClose={() => setSelectedDate(null)} />
+        <DayTradesModal
+          date={selectedDate}
+          trades={selectedDayTrades}
+          onClose={() => setSelectedDate(null)}
+        />
       )}
     </div>
   );
 }
 
 // מודל שמציג את כל הטריידים של יום ספציפי, נפתח בלחיצה על תא בלוח השנה.
+// אותו TradeCard כמו בטאב Journal — אותו UX בדיוק — אבל תצוגה בלבד, ללא עריכה/מחיקה.
 function DayTradesModal({ date, trades, onClose }) {
   const total = trades.reduce((s, t) => s + (tradeDollarPnl(t) ?? 0), 0);
   return (
@@ -854,7 +875,7 @@ function DayTradesModal({ date, trades, onClose }) {
     }}>
       <div onClick={e => e.stopPropagation()} style={{
         background: "#080808", border: "1px solid #1e1e1e", borderRadius: 4,
-        width: "100%", maxWidth: 560, maxHeight: "80vh", display: "flex", flexDirection: "column",
+        width: "100%", maxWidth: 640, maxHeight: "80vh", display: "flex", flexDirection: "column",
       }}>
         <div style={{
           display: "flex", justifyContent: "space-between", alignItems: "center",
@@ -874,41 +895,9 @@ function DayTradesModal({ date, trades, onClose }) {
           }}>✕</button>
         </div>
         <div style={{ overflowY: "auto", padding: "12px 18px" }}>
-          {trades.map(t => {
-            const dollarPnl = tradeDollarPnl(t);
-            return (
-              <div key={t.id} style={{
-                display: "flex", justifyContent: "space-between", alignItems: "center",
-                padding: "10px 0", borderBottom: "1px solid #141414",
-              }}>
-                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                  <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, fontSize: 14, color: "#e8c84a" }}>
-                    {t.ticker || "—"}
-                  </span>
-                  <span style={{ fontSize: 10, color: "#888", fontFamily: "'IBM Plex Mono', monospace" }}>
-                    {t.direction || "Long"}{t.quantity ? ` × ${t.quantity}` : ""}
-                  </span>
-                  <span style={{ fontSize: 10, color: "#666", fontFamily: "'IBM Plex Mono', monospace" }}>
-                    {t.entryPrice}{t.exitPrice ? ` → ${t.exitPrice}` : ""}
-                  </span>
-                  {t.exitDate && (
-                    <span style={{ fontSize: 10, color: "#666", fontFamily: "'IBM Plex Mono', monospace" }} title="Exit date">
-                      exit {t.exitDate}
-                    </span>
-                  )}
-                </div>
-                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                  {dollarPnl != null && (
-                    <span style={{
-                      color: dollarPnl > 0 ? "#4caf7d" : dollarPnl < 0 ? "#e05252" : "#888",
-                      fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, fontWeight: 600,
-                    }}>{fmtUsd(dollarPnl, true)}</span>
-                  )}
-                  <PnlBadge pnl={t.pnl} />
-                </div>
-              </div>
-            );
-          })}
+          {trades.map(t => (
+            <TradeCard key={t.id} trade={t} />
+          ))}
         </div>
       </div>
     </div>
