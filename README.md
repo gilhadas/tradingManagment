@@ -45,7 +45,59 @@ npm run dev
 
 ---
 
-## Deploy ל-Vercel
+## Deploy — production אמיתי (שרת stocksBreakout)
+
+**ה-production בפועל לא רץ ב-Vercel** — הוא רץ כ-container בתוך ה-Docker Compose stack של
+`stocksBreakout`, ב-VM אחד (Oracle Cloud) יחד עם הסורק, ה-API וה-dashboard שלו. סקציית Vercel
+למטה נשארת כאופציה נפרדת/עצמאית (למשל לפריסה עצמאית בלי stocksBreakout), אבל היא **לא** מה
+שמשרת את `journal.gilhadas-stocks.com` היום.
+
+### איך זה מסתדר
+- שם ה-service ב-compose הוא `journal` (`sb-journal`), מוגדר ב-
+  `stocksBreakout/compose.yaml`. ה-`build.context` שלו הוא `../TradeManagment` — כלומר על ה-VM
+  חייב להיות clone של הריפו **הזה** לצד `stocksBreakout`, באותה רמת תיקיות:
+  ```
+  ~/stocksBreakout
+  ~/TradeManagment      # ה-repo הזה, clone נפרד
+  ```
+- ה-[Dockerfile](Dockerfile) בונה static build (Vite → nginx) ומקבל
+  `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` כ-**build args** מתוך `.env` של
+  `stocksBreakout` (לא מה-`.env.local` של הריפו הזה) — הם נאפים לתוך ה-JS bundle בזמן build,
+  אז שינוי שלהם דורש rebuild, לא רק restart.
+- [nginx.conf](nginx.conf) מגיש SPA fallback (`try_files ... /index.html`) ומטפל ב-`.mjs`
+  (worker של pdfjs) שברירת המחדל של nginx לא מזהה כ-JavaScript.
+- חשוף החוצה דרך ה-Cloudflare tunnel של stocksBreakout, עם **שני** hostnames לאותו container:
+  - `journal.gilhadas-stocks.com` — הכניסה הרגילה.
+  - `journal-daytrade.gilhadas-stocks.com` — alias לאותו container, בשימוש ל-rows שמגיעות
+    מבוט ה-DayTrade (`broker="DayTrade"`). מקור נפרד = Google sign-in נפרד, וכל hostname חייב
+    להיות ברשימת ה-Redirect URLs ב-Supabase (Authentication → URL Configuration), אחרת
+    ההתחברות מהדומיין הזה תיכשל בשקט.
+- `mem_limit: 64m`, `restart: unless-stopped`, ולוקאלית על ה-VM גם נגיש דרך
+  `127.0.0.1:8081` (`docker compose port journal 80`) לבדיקה בלי לעבור דרך ה-tunnel.
+
+### לפרוס שינוי קוד
+```bash
+# 1. (על ה-Mac, בריפו הזה) לפי הזרימה הרגילה
+git add <files> && git commit -m "..." && git push
+
+# 2. על ה-VM
+cd ~/TradeManagment && git pull --ff-only
+cd ~/stocksBreakout && docker compose up -d --build journal
+
+# 3. וידוא
+docker compose ps journal
+curl -s -o /dev/null -w "%{http_code}\n" https://journal.gilhadas-stocks.com
+```
+שינוי ב-`VITE_SUPABASE_URL`/`VITE_SUPABASE_ANON_KEY` (ב-`.env` של stocksBreakout, לא כאן) דורש
+אותו `docker compose up -d --build journal` — הערכים נאפים בזמן build, `restart` לבד לא מספיק.
+
+מדריך התפעול המלא (health checks, logs, troubleshooting, מה אסור להריץ) הוא ה-runbook של
+stocksBreakout — `stocksBreakout/deploy/README.md` ו-`stocksBreakout/deploy/OPERATIONS.md` —
+כי `journal` הוא אחד משישה containers על אותו VM, לא deployment עצמאי.
+
+---
+
+## Deploy ל-Vercel (פריסה עצמאית, לא ה-production הנוכחי)
 
 1. העלה את הקוד ל-GitHub:
    ```bash

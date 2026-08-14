@@ -706,18 +706,23 @@ export function AnalyticsView({ trades }) {
   const daysInMonth = new Date(cy, cm, 0).getDate();
   const monthDays = Array.from({ length: daysInMonth }, (_, i) => {
     const date = `${calMonth}-${String(i + 1).padStart(2, "0")}`;
-    return { day: i + 1, ...byDate[date] };
+    return { day: i + 1, date, ...byDate[date] };
   });
   const monthMax = Math.max(1, ...monthDays.filter(d => d.pnl != null).map(d => Math.abs(d.pnl)));
   const monthTotal = monthDays.reduce((s, d) => s + (d.pnl || 0), 0);
+
+  // ── יום נבחר — פתיחת רשימת הטריידים של אותו יום ──
+  const [selectedDate, setSelectedDate] = useState(null);
+  const selectedDayTrades = selectedDate ? closed.filter(t => t.date === selectedDate) : [];
 
   const dayCell = (d) => {
     const has = d.pnl != null;
     const alpha = has ? 0.12 + 0.45 * (Math.abs(d.pnl) / monthMax) : 0;
     const bg = !has ? "#0a0a0a" : d.pnl > 0 ? `rgba(76,175,125,${alpha})` : d.pnl < 0 ? `rgba(224,82,82,${alpha})` : "#0d0d0d";
     return (
-      <div key={d.day} style={{ background: bg, border: "1px solid #1a1a1a", borderRadius: 2, minHeight: 52, padding: "4px 6px" }}
-        title={has ? `${d.count} trade${d.count > 1 ? "s" : ""}` : undefined}>
+      <div key={d.day} onClick={has ? () => setSelectedDate(d.date) : undefined}
+        style={{ background: bg, border: "1px solid #1a1a1a", borderRadius: 2, minHeight: 52, padding: "4px 6px", cursor: has ? "pointer" : "default" }}
+        title={has ? `${d.count} trade${d.count > 1 ? "s" : ""} — click to view` : undefined}>
         <div style={{ fontSize: 9, color: "#888" }}>{d.day}</div>
         {has && (
           <div style={{ fontSize: 11, fontWeight: 600, marginTop: 4, color: d.pnl > 0 ? "#4caf7d" : d.pnl < 0 ? "#e05252" : "#888" }}>
@@ -825,6 +830,76 @@ export function AnalyticsView({ trades }) {
         <div style={panelStyle}>
           {sectionTitle("Top Losers")}
           {tickerList(topLosers, "No losing tickers")}
+        </div>
+      </div>
+
+      {selectedDate && (
+        <DayTradesModal date={selectedDate} trades={selectedDayTrades} onClose={() => setSelectedDate(null)} />
+      )}
+    </div>
+  );
+}
+
+// מודל שמציג את כל הטריידים של יום ספציפי, נפתח בלחיצה על תא בלוח השנה.
+function DayTradesModal({ date, trades, onClose }) {
+  const total = trades.reduce((s, t) => s + (tradeDollarPnl(t) ?? 0), 0);
+  return (
+    <div onClick={onClose} style={{
+      position: "fixed", inset: 0, background: "rgba(0,0,0,0.65)",
+      display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 20,
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: "#080808", border: "1px solid #1e1e1e", borderRadius: 4,
+        width: "100%", maxWidth: 560, maxHeight: "80vh", display: "flex", flexDirection: "column",
+      }}>
+        <div style={{
+          display: "flex", justifyContent: "space-between", alignItems: "center",
+          padding: "14px 18px", borderBottom: "1px solid #1a1a1a",
+        }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#e8e8e8", fontFamily: "'IBM Plex Mono', monospace" }}>{date}</div>
+            <div style={{ fontSize: 11, color: "#888", marginTop: 2 }}>
+              {trades.length} trade{trades.length !== 1 ? "s" : ""} ·{" "}
+              <span style={{ color: total > 0 ? "#4caf7d" : total < 0 ? "#e05252" : "#888", fontWeight: 600 }}>
+                {fmtUsd(total, true)}
+              </span>
+            </div>
+          </div>
+          <button onClick={onClose} style={{
+            background: "none", border: "none", color: "#777", cursor: "pointer", fontSize: 16, padding: "0 4px",
+          }}>✕</button>
+        </div>
+        <div style={{ overflowY: "auto", padding: "12px 18px" }}>
+          {trades.map(t => {
+            const dollarPnl = tradeDollarPnl(t);
+            return (
+              <div key={t.id} style={{
+                display: "flex", justifyContent: "space-between", alignItems: "center",
+                padding: "10px 0", borderBottom: "1px solid #141414",
+              }}>
+                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                  <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, fontSize: 14, color: "#e8c84a" }}>
+                    {t.ticker || "—"}
+                  </span>
+                  <span style={{ fontSize: 10, color: "#888", fontFamily: "'IBM Plex Mono', monospace" }}>
+                    {t.direction || "Long"}{t.quantity ? ` × ${t.quantity}` : ""}
+                  </span>
+                  <span style={{ fontSize: 10, color: "#666", fontFamily: "'IBM Plex Mono', monospace" }}>
+                    {t.entryPrice}{t.exitPrice ? ` → ${t.exitPrice}` : ""}
+                  </span>
+                </div>
+                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                  {dollarPnl != null && (
+                    <span style={{
+                      color: dollarPnl > 0 ? "#4caf7d" : dollarPnl < 0 ? "#e05252" : "#888",
+                      fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, fontWeight: 600,
+                    }}>{fmtUsd(dollarPnl, true)}</span>
+                  )}
+                  <PnlBadge pnl={t.pnl} />
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
     </div>
