@@ -1139,6 +1139,24 @@ export default function App() {
     e.target.value = "";
   };
 
+  // מוחק את כל הטריידים של הברוקר הנבחר בלבד — לא תלוי בייבוא, למקרה של כפילויות
+  // שהצטברו (למשל אחרי כמה ייבואים חופפים) שרוצים לנקות ולהתחיל מחדש.
+  const handleResetBroker = async () => {
+    const count = trades.filter(t => (t.broker || "IBKR") === broker).length;
+    if (count === 0) return;
+    const ok = window.confirm(
+      `This will permanently delete ALL ${count} ${broker} trade${count !== 1 ? "s" : ""}.\nThis cannot be undone. Continue?`
+    );
+    if (!ok) return;
+    const prev = trades;
+    setTrades(prev.filter(t => (t.broker || "IBKR") !== broker)); // עדכון אופטימי
+    const { error } = await supabase.from("trades").delete().eq("broker", broker);
+    if (error) {
+      setError(error.message);
+      setTrades(prev); // החזרה למצב הקודם אם נכשל
+    }
+  };
+
   const handleCancel = () => {
     setShowForm(false);
     setEditing(null);
@@ -1230,6 +1248,12 @@ export default function App() {
               <option key={b} value={b}>{b}</option>
             ))}
           </select>
+          {/* Reset — deletes all trades for the selected broker (e.g. to clear duplicates and re-import clean) */}
+          <button
+            onClick={handleResetBroker}
+            title={`Delete ALL ${broker} trades`}
+            style={{ ...btnStyle, color: "#c96a6a" }}
+          >⨯ Reset {broker}</button>
           {/* File import — shown only for brokers we have a parser for */}
           {IMPORTERS[broker] && (
             <>
