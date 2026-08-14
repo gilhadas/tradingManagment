@@ -25,6 +25,7 @@ export function toRow(trade, userId) {
     stop_price: toNum(trade.stopPrice),
     exit_price: toNum(trade.exitPrice),
     pnl: toNum(trade.pnl),
+    external_id: trade.externalId || null,
     emotion_entry: trade.emotionEntry || null,
     mistakes: trade.mistakes || [],
     what_went_right: trade.whatWentRight || null,

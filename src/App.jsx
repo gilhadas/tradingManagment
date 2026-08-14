@@ -886,6 +886,9 @@ export default function App() {
     localStorage.setItem(BROKER_KEY, b);
   };
 
+  // כשמסומן, ייבוא CSV/PDF חדש ימחק קודם את כל הטריידים של הברוקר הנוכחי.
+  const [resetOnImport, setResetOnImport] = useState(false);
+
   // מעקב אחר session: טעינה ראשונית + הקשבה לשינויי התחברות/יציאה.
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -1008,11 +1011,23 @@ export default function App() {
     e.target.value = "";
   };
 
+  // Deterministic id from trade content, so re-importing the same export (or an
+  // overlapping window) can't create duplicate rows — matches the DayTrade bot's
+  // approach (see schema.sql). Same content -> same id -> upsert skips it.
+  const externalIdFor = (t, broker) =>
+    [broker, t.date, t.ticker, t.quantity, t.entryPrice, t.exitPrice].join("|");
+
   const handleImportFile = (e) => {
     const file = e.target.files[0];
     if (!file) return;
     const imp = IMPORTERS[broker];
     if (!imp) return;
+    if (resetOnImport) {
+      const ok = window.confirm(
+        `This will delete ALL existing ${broker} trades before importing.\nThis cannot be undone. Continue?`
+      );
+      if (!ok) { e.target.value = ""; return; }
+    }
     const reader = new FileReader();
     reader.onload = async (ev) => {
       try {
@@ -1021,11 +1036,26 @@ export default function App() {
           alert("No Buy/Sell transactions found in this file.");
           return;
         }
-        const rows = parsed.map(t => toRow({ ...t, broker }, session.user.id));
-        const { error } = await supabase.from("trades").insert(rows);
+        if (resetOnImport) {
+          const { error: delError } = await supabase.from("trades").delete().eq("broker", broker);
+          if (delError) throw delError;
+        }
+        const rows = parsed.map(t =>
+          toRow({ ...t, broker, externalId: externalIdFor(t, broker) }, session.user.id)
+        );
+        const { data, error } = await supabase
+          .from("trades")
+          .upsert(rows, { onConflict: "user_id,external_id", ignoreDuplicates: true })
+          .select("id");
         if (error) throw error;
         setTrades(await fetchTrades());
-        alert(`Imported ${parsed.length} trade${parsed.length !== 1 ? "s" : ""} from ${broker} ${imp.label}.\nEntry/exit prices are pre-filled — add your notes, lessons and setup type manually.`);
+        const imported = data ? data.length : parsed.length;
+        const skipped = parsed.length - imported;
+        alert(
+          `Imported ${imported} trade${imported !== 1 ? "s" : ""} from ${broker} ${imp.label}` +
+          (skipped > 0 ? ` (${skipped} duplicate${skipped !== 1 ? "s" : ""} skipped).` : ".") +
+          `\nEntry/exit prices are pre-filled — add your notes, lessons and setup type manually.`
+        );
       } catch (err) {
         alert("Import error: " + (err.message || "Invalid file"));
       }
@@ -1127,10 +1157,23 @@ export default function App() {
           </select>
           {/* File import — shown only for brokers we have a parser for */}
           {IMPORTERS[broker] && (
-            <label style={{ ...btnStyle, color: "#7aaacc" }} title={`Import ${broker} transaction-history ${IMPORTERS[broker].label}`}>
-              ↑ {IMPORTERS[broker].label}
-              <input type="file" accept={IMPORTERS[broker].accept} onChange={handleImportFile} style={{ display: "none" }} />
-            </label>
+            <>
+              <label
+                style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "#888", cursor: "pointer" }}
+                title={`Delete all existing ${broker} trades before the next import`}
+              >
+                <input
+                  type="checkbox"
+                  checked={resetOnImport}
+                  onChange={e => setResetOnImport(e.target.checked)}
+                />
+                Reset
+              </label>
+              <label style={{ ...btnStyle, color: "#7aaacc" }} title={`Import ${broker} transaction-history ${IMPORTERS[broker].label}`}>
+                ↑ {IMPORTERS[broker].label}
+                <input type="file" accept={IMPORTERS[broker].accept} onChange={handleImportFile} style={{ display: "none" }} />
+              </label>
+            </>
           )}
           {/* Export */}
           <button onClick={handleExport} style={btnStyle}>↓ Export</button>
