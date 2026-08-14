@@ -34,13 +34,14 @@ function weightedAvg(fills) {
 // Blank journal entry; parsed fields are merged over it. The rest (setupType,
 // catalyst, emotions, lesson, …) stay blank for the user to fill in manually.
 // Shared with the other broker parsers (ibiParser).
-export function makeTrade({ date, ticker, quantity, entryPrice, exitPrice }) {
+export function makeTrade({ date, exitDate, ticker, quantity, entryPrice, exitPrice }) {
   let pnl = "";
   if (entryPrice != null && exitPrice != null && entryPrice !== 0) {
     pnl = (((exitPrice - entryPrice) / entryPrice) * 100).toFixed(2);
   }
   return {
     date,
+    exitDate: exitDate || "",
     ticker,
     direction: "Long",
     setupType: "",
@@ -128,6 +129,7 @@ export function parseIBKRCsv(text) {
         if (matched > 0) {
           trades.push(makeTrade({
             date: posDate,
+            exitDate: date,
             ticker,
             quantity: matched,
             entryPrice: posCost,
@@ -143,6 +145,7 @@ export function parseIBKRCsv(text) {
         if (excess > 0) {
           trades.push(makeTrade({
             date,
+            exitDate: date,
             ticker,
             quantity: excess,
             entryPrice: null,

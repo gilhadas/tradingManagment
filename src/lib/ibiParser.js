@@ -82,6 +82,7 @@ export function matchTransactions(txs) {
         prev.qty = newQty;
         Object.assign(prev.trade, makeTrade({
           date: prev.trade.date,
+          exitDate: tx.date,
           ticker: tx.symbol,
           quantity: newQty,
           entryPrice: prev.entry,
@@ -90,6 +91,7 @@ export function matchTransactions(txs) {
       } else {
         const trade = makeTrade({
           date: p.date,
+          exitDate: tx.date,
           ticker: tx.symbol,
           quantity: matched,
           entryPrice: p.cost,
@@ -115,6 +117,7 @@ export function matchTransactions(txs) {
     if (excess > 0) {
       trades.push(makeTrade({
         date: tx.date,
+        exitDate: tx.date,
         ticker: tx.symbol,
         quantity: excess,
         entryPrice: null,

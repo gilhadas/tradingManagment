@@ -15,6 +15,7 @@ export function toRow(trade, userId) {
   return {
     user_id: userId,
     trade_date: trade.date || null,
+    exit_date: trade.exitDate || null,
     ticker: trade.ticker || null,
     direction: trade.direction || null,
     broker: trade.broker || "IBKR",
@@ -40,6 +41,7 @@ export function fromRow(row) {
   return {
     id: row.id,
     date: row.trade_date || "",
+    exitDate: row.exit_date || "",
     ticker: row.ticker || "",
     direction: row.direction || "Long",
     broker: row.broker || "IBKR",

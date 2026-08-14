@@ -63,6 +63,7 @@ const monthLabel = (ym) => {
 
 const emptyTrade = (broker = "IBKR") => ({
   date: new Date().toISOString().slice(0, 10),
+  exitDate: "",
   ticker: "",
   direction: "Long",
   broker,
@@ -349,7 +350,7 @@ function TradeForm({ trade, onChange, onSave, onCancel, saving }) {
       </div>
 
       {/* Row 2 */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr", gap: 16 }}>
         <Field label="Qty (shares)">
           <Input type="number" value={trade.quantity} onChange={v => onChange("quantity", v)} placeholder="100" />
         </Field>
@@ -361,6 +362,9 @@ function TradeForm({ trade, onChange, onSave, onCancel, saving }) {
         </Field>
         <Field label="Exit $">
           <Input type="number" value={trade.exitPrice} onChange={v => onChange("exitPrice", v)} placeholder="0.00" />
+        </Field>
+        <Field label="Exit Date">
+          <Input type="date" value={trade.exitDate} onChange={v => onChange("exitDate", v)} />
         </Field>
       </div>
 
@@ -887,6 +891,11 @@ function DayTradesModal({ date, trades, onClose }) {
                   <span style={{ fontSize: 10, color: "#666", fontFamily: "'IBM Plex Mono', monospace" }}>
                     {t.entryPrice}{t.exitPrice ? ` → ${t.exitPrice}` : ""}
                   </span>
+                  {t.exitDate && (
+                    <span style={{ fontSize: 10, color: "#666", fontFamily: "'IBM Plex Mono', monospace" }} title="Exit date">
+                      exit {t.exitDate}
+                    </span>
+                  )}
                 </div>
                 <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
                   {dollarPnl != null && (

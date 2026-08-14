@@ -40,6 +40,13 @@ alter table public.trades add column if not exists external_id text;
 create unique index if not exists trades_user_external_uidx
   on public.trades (user_id, external_id);
 
+-- תאריך הסגירה בפועל של הפוזיציה. `trade_date` משמש בברוקרים שונים באופן לא
+-- אחיד — יבוא CSV/PDF מתעד בו את תאריך הפתיחה (posDate), ואילו הבוט DayTrade
+-- מתעד בו את תאריך הסגירה (journal_sync.py:_trade_date) — כך שלוח השנה מקבץ
+-- לפי תאריכים שונים בין ברוקרים. עמודה נפרדת נותנת לכל טרייד גם את תאריך
+-- הסגירה בפועל, ללא תלות באיך `trade_date` מחושב עבור הברוקר שלו.
+alter table public.trades add column if not exists exit_date date;
+
 alter table public.trades enable row level security;
 
 -- מדיניות גישה: משתמש מחובר ניגש אך ורק לשורות שלו
