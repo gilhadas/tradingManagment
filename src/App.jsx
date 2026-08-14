@@ -44,6 +44,15 @@ const tradeDollarPnl = (t) => {
   return (t.direction === "Short" ? entry - exit : exit - entry) * qty;
 };
 
+// התאריך שבו ה-P&L מומש — זה התאריך שלפיו מקבצים בלוח השנה ובגרף ההון, כי
+// רווח נרשם ביום הסגירה ולא ביום הפתיחה.
+// ⚠ `date` לא אומר אותו דבר בכל הברוקרים: ייבוא CSV/PDF שם בו את תאריך
+// הפתיחה (ואת הסגירה ב-exitDate), ואילו הבוט DayTrade שם בו כבר את תאריך
+// הסגירה ואין לו exitDate כלל (journal_sync.py:_trade_date). לכן exitDate
+// קודם ו-date הוא הנפילה — נכון לשני המקרים. טריידים שיובאו לפני שהעמודה
+// exit_date נוספה נשארים על תאריך הפתיחה עד ייבוא חוזר שימלא אותה.
+const pnlDate = (t) => t.exitDate || t.date;
+
 // שווי הפוזיציה בדולרים: כמות × מחיר כניסה. null אם חסר ערך.
 const tradePositionValue = (t) => {
   const qty = parseFloat(t.quantity);
@@ -546,11 +555,14 @@ export function PerformanceView({ trades }) {
 
   const cutoff = rangeCutoff(range);
   const closed = trades.filter(t =>
-    tradeDollarPnl(t) != null && t.date && (!cutoff || t.date >= cutoff));
+    tradeDollarPnl(t) != null && pnlDate(t) && (!cutoff || pnlDate(t) >= cutoff));
 
-  // סכום יומי -> נקודות מצטברות לפי תאריך
+  // סכום יומי -> נקודות מצטברות לפי יום הסגירה (ראה pnlDate)
   const byDate = {};
-  for (const t of closed) byDate[t.date] = (byDate[t.date] || 0) + tradeDollarPnl(t);
+  for (const t of closed) {
+    const d = pnlDate(t);
+    byDate[d] = (byDate[d] || 0) + tradeDollarPnl(t);
+  }
   const dates = Object.keys(byDate).sort();
   let cum = 0;
   const points = dates.map(d => { cum += byDate[d]; return { date: d, day: byDate[d], cum }; });
@@ -688,7 +700,7 @@ export function AnalyticsView({ trades }) {
 
   const cutoff = rangeCutoff(range);
   const closed = trades.filter(t =>
-    tradeDollarPnl(t) != null && t.date && (!cutoff || t.date >= cutoff));
+    tradeDollarPnl(t) != null && pnlDate(t) && (!cutoff || pnlDate(t) >= cutoff));
   const pnls = closed.map(tradeDollarPnl);
 
   const wins = pnls.filter(p => p > 0);
@@ -707,12 +719,13 @@ export function AnalyticsView({ trades }) {
     { label: "Avg Loss", value: avgLoss != null ? fmtUsd(-avgLoss, true) : "—", color: "#e05252" },
   ];
 
-  // ── לוח שנה יומי ──
+  // ── לוח שנה יומי (מקובץ לפי יום הסגירה — ראה pnlDate) ──
   const byDate = {};
   for (const t of closed) {
-    (byDate[t.date] ||= { pnl: 0, count: 0 });
-    byDate[t.date].pnl += tradeDollarPnl(t);
-    byDate[t.date].count += 1;
+    const d = pnlDate(t);
+    (byDate[d] ||= { pnl: 0, count: 0 });
+    byDate[d].pnl += tradeDollarPnl(t);
+    byDate[d].count += 1;
   }
   const tradeMonths = [...new Set(Object.keys(byDate).map(d => d.slice(0, 7)))].sort();
   const [calMonth, setCalMonth] = useState(() => tradeMonths[tradeMonths.length - 1] || new Date().toISOString().slice(0, 7));
@@ -733,7 +746,7 @@ export function AnalyticsView({ trades }) {
 
   // ── יום נבחר — פתיחת רשימת הטריידים של אותו יום ──
   const [selectedDate, setSelectedDate] = useState(null);
-  const selectedDayTrades = selectedDate ? closed.filter(t => t.date === selectedDate) : [];
+  const selectedDayTrades = selectedDate ? closed.filter(t => pnlDate(t) === selectedDate) : [];
 
   const dayCell = (d) => {
     const has = d.pnl != null;
@@ -882,7 +895,9 @@ function DayTradesModal({ date, trades, onClose }) {
           padding: "14px 18px", borderBottom: "1px solid #1a1a1a",
         }}>
           <div>
-            <div style={{ fontSize: 13, fontWeight: 700, color: "#e8e8e8", fontFamily: "'IBM Plex Mono', monospace" }}>{date}</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#e8e8e8", fontFamily: "'IBM Plex Mono', monospace" }}>
+              {date} <span style={{ fontSize: 10, fontWeight: 400, color: "#777" }}>closed</span>
+            </div>
             <div style={{ fontSize: 11, color: "#888", marginTop: 2 }}>
               {trades.length} trade{trades.length !== 1 ? "s" : ""} ·{" "}
               <span style={{ color: total > 0 ? "#4caf7d" : total < 0 ? "#e05252" : "#888", fontWeight: 600 }}>
@@ -1121,12 +1136,42 @@ export default function App() {
           .upsert(rows, { onConflict: "user_id,external_id", ignoreDuplicates: true })
           .select("id");
         if (error) throw error;
-        setTrades(await fetchTrades());
+
         const imported = data ? data.length : parsed.length;
         const skipped = parsed.length - imported;
+
+        // ignoreDuplicates לא מעדכן שורות קיימות, ו-external_id לא כולל את
+        // exitDate — כך שטריידים שיובאו לפני שהעמודה exit_date נוספה נשארים
+        // בלי תאריך סגירה גם אחרי ייבוא חוזר של אותו קובץ. ממלאים אותו כאן
+        // בנפרד: רק את העמודה הזו, ורק היכן שהיא ריקה — כדי שלקחים/הערות
+        // שנכתבו ידנית לא יידרסו, וגם תיקון ידני של תאריך לא יבוטל.
+        // רץ רק כשהיו כפילויות: בייבוא נקי כל שורה נכתבה עם exit_date ממילא.
+        // מקובץ לפי תאריך כדי לא לשלוח בקשה נפרדת לכל טרייד.
+        let backfilled = 0;
+        if (skipped > 0) {
+          const idsByExitDate = {};
+          for (const t of parsed) {
+            if (!t.exitDate) continue;
+            (idsByExitDate[t.exitDate] ||= []).push(externalIdFor(t, broker));
+          }
+          for (const [exitDate, ids] of Object.entries(idsByExitDate)) {
+            const { data: upd, error: updErr } = await supabase
+              .from("trades")
+              .update({ exit_date: exitDate })
+              .eq("broker", broker)
+              .in("external_id", ids)
+              .is("exit_date", null)
+              .select("id");
+            if (updErr) throw updErr;
+            backfilled += upd ? upd.length : 0;
+          }
+        }
+
+        setTrades(await fetchTrades());
         alert(
           `Imported ${imported} trade${imported !== 1 ? "s" : ""} from ${broker} ${imp.label}` +
           (skipped > 0 ? ` (${skipped} duplicate${skipped !== 1 ? "s" : ""} skipped).` : ".") +
+          (backfilled > 0 ? `\nFilled in the exit date on ${backfilled} existing trade${backfilled !== 1 ? "s" : ""}.` : "") +
           `\nEntry/exit prices are pre-filled — add your notes, lessons and setup type manually.`
         );
       } catch (err) {
