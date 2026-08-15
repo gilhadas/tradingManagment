@@ -1599,14 +1599,22 @@ export default function App() {
   if (!session) return <Login />;
 
   // מסננים קודם לפי ברוקר, ואז נגזרים החודשים והסינון החודשי.
+  //
+  // הסינון החודשי לפי pnlDate — יום מימוש הרווח — ולא לפי תאריך הכניסה, כדי
+  // שהחודש יאמר אותו דבר בכל הלשוניות. כשזה היה לפי תאריך הכניסה, סווינג שנפתח
+  // ביולי ונסגר באוגוסט נספר ביולי כאן ובאוגוסט באנליטיקות, ו-"Total P&L"
+  // לאוגוסט הראה שני מספרים שונים בשתי לשוניות (הפרש של 1,822$- על נתוני IBKR
+  // האמיתיים, מארבעה סווינגים בלבד).
+  // ⚠ pnlDate נופל לתאריך הכניסה כשאין תאריך יציאה, כך שפוזיציה פתוחה עדיין
+  // מופיעה בחודש שבו נפתחה — לה עוד אין יום מימוש.
   const brokerTrades = trades.filter(t => (t.broker || "IBKR") === broker);
-  const months = [...new Set(brokerTrades.map(t => (t.date || "").slice(0, 7)).filter(m => m.length === 7))]
+  const months = [...new Set(brokerTrades.map(t => (pnlDate(t) || "").slice(0, 7)).filter(m => m.length === 7))]
     .sort()
     .reverse();
   const effectivePeriod = period === "latest" ? (months[0] || "all") : period;
   const visibleTrades = effectivePeriod === "all"
     ? brokerTrades
-    : brokerTrades.filter(t => (t.date || "").startsWith(effectivePeriod));
+    : brokerTrades.filter(t => (pnlDate(t) || "").startsWith(effectivePeriod));
 
   const btnStyle = {
     padding: "10px 16px",
