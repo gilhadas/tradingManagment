@@ -1446,10 +1446,23 @@ export default function App() {
   //
   // Commission is deliberately NOT part of the key — it isn't an identity
   // attribute, and a broker restating it would otherwise orphan the row.
+  // ⚠ The account segment is appended ONLY when the parser supplied one (IBKR).
+  // Adding an empty segment unconditionally would change the key shape for IBI
+  // and Blink too, orphaning every row they already have and turning the next
+  // re-import into a pile of duplicates.
+  //
+  // Why the account matters: two IBKR accounts running the same signals produce
+  // trades identical in ticker, date, size and both prices. Without it the second
+  // account's row is skipped as a duplicate and vanishes with no error — and the
+  // "#N" counter can't save it, because it restarts on every import and so never
+  // sees the other file's rows.
   const externalIdsFor = (parsedTrades, broker) => {
     const seen = new Map();
     return parsedTrades.map(t => {
-      const base = [broker, t.date, t.ticker, t.quantity, t.entryPrice, t.exitPrice].join("|");
+      const key = [broker];
+      if (t.account) key.push(t.account);
+      key.push(t.date, t.ticker, t.quantity, t.entryPrice, t.exitPrice);
+      const base = key.join("|");
       const n = (seen.get(base) || 0) + 1;
       seen.set(base, n);
       return n === 1 ? base : `${base}#${n}`;

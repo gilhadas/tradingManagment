@@ -33,7 +33,12 @@ export { parseCsvLine, makeTrade } from "./tradeMatching.js";
 export function parseIBKRCsv(text) {
   const lines = text.split(/\r?\n/).filter((l) => l.trim());
 
-  const txs = [];
+  // Fills are bucketed per ACCOUNT (col 3, e.g. "U***83935"). Two accounts can
+  // hold the same symbol at once, and matching them against one running position
+  // would pair a buy in one against a sell in the other — inventing round trips
+  // that never happened. Single-account exports simply yield one bucket.
+  const byAccount = new Map();
+
   for (const line of lines) {
     const cols = parseCsvLine(line);
 
@@ -59,14 +64,27 @@ export function parseIBKRCsv(text) {
     const rawComm = cols[11];
     const comm = !rawComm || rawComm === "-" ? 0 : Math.abs(parseFloat(rawComm)) || 0;
 
-    txs.push({ date, symbol, buy: rawQty > 0, qty, price, comm });
+    const account = cols[3] || "";
+    if (!byAccount.has(account)) byAccount.set(account, []);
+    byAccount.get(account).push({ date, symbol, buy: rawQty > 0, qty, price, comm });
   }
 
-  // Stable sort by date ONLY. Array.prototype.sort is stable (ES2019+), so rows
-  // within a day keep their file order — which is the execution order, and the
-  // only intraday sequencing an IBKR export gives us. Sorting by date as well
-  // keeps this correct if the export is not globally date-ordered.
-  txs.sort((a, b) => a.date.localeCompare(b.date));
+  const trades = [];
+  for (const [account, txs] of byAccount) {
+    // Stable sort by date ONLY. Array.prototype.sort is stable (ES2019+), so rows
+    // within a day keep their file order — which is the execution order, and the
+    // only intraday sequencing an IBKR export gives us. Sorting by date as well
+    // keeps this correct if the export is not globally date-ordered.
+    txs.sort((a, b) => a.date.localeCompare(b.date));
+    for (const t of matchTransactions(txs)) {
+      // Carried so the importer can key on it — two accounts running the same
+      // strategy produce trades identical in every other field. Not persisted:
+      // toRow only maps the columns the journal actually has.
+      trades.push(account ? { ...t, account } : t);
+    }
+  }
 
-  return matchTransactions(txs);
+  // Newest first across all accounts (each bucket is sorted on its own).
+  trades.sort((a, b) => b.date.localeCompare(a.date));
+  return trades;
 }
