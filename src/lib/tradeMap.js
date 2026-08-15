@@ -16,6 +16,11 @@ export function toRow(trade, userId) {
     user_id: userId,
     trade_date: trade.date || null,
     exit_date: trade.exitDate || null,
+    // Absolute instants; null = no intraday time recorded (IBKR/Blink never have one).
+    entry_at: trade.entryAt || null,
+    exit_at: trade.exitAt || null,
+    // Positive cost. null = not recorded, which P&L treats as zero.
+    commission: toNum(trade.commission),
     ticker: trade.ticker || null,
     direction: trade.direction || null,
     broker: trade.broker || "IBKR",
@@ -42,6 +47,14 @@ export function fromRow(row) {
     id: row.id,
     date: row.trade_date || "",
     exitDate: row.exit_date || "",
+    entryAt: row.entry_at || "",
+    exitAt: row.exit_at || "",
+    commission: toStr(row.commission),
+    // Exposed so the import backfill can tell which existing rows are still
+    // missing which column. ⚠ Deliberately stripped again in handleImport (the
+    // JSON restore path) — re-inserting a row that carries its external_id would
+    // collide with trades_user_external_uidx and fail the whole batch.
+    externalId: row.external_id || "",
     ticker: row.ticker || "",
     direction: row.direction || "Long",
     broker: row.broker || "IBKR",

@@ -7,16 +7,38 @@
 // against a running position in true chronological order. Sells that close
 // the same position instance on the same day merge into one journal entry.
 
-import { parseCsvLine, makeTrade } from "./ibkrParser.js";
+import { parseCsvLine, matchTransactions } from "./tradeMatching.js";
 
-// "07/17/2026 11:57:22 EDT" -> { date: "2026-07-17", ts: epoch ms }
+export { matchTransactions } from "./tradeMatching.js";
+
+// Wall-clock timezone abbreviations that appear in IBI exports, as fixed UTC
+// offsets. The abbreviation in the file is the SOURCE OF TRUTH for daylight
+// saving: deriving the offset from the date instead would be wrong during the
+// ambiguous fall-back hour, which is the only hour where it can matter.
+const TZ_OFFSET = { EST: "-05:00", EDT: "-04:00", UTC: "+00:00", GMT: "+00:00" };
+
+// "07/17/2026 11:57:22 EDT" -> { date, ts, at }
+//   date : broker-local calendar date, verbatim from the file
+//   ts   : sort key ONLY — the wall clock projected onto UTC. Deterministic and
+//          machine-independent, unlike the previous `new Date(y, m, d, …)` which
+//          silently depended on the importing browser's own timezone.
+//   at   : the true absolute instant as an ISO-UTC string, or null when the
+//          timezone is missing or unrecognised.
+//
+// ⚠ A guessed offset is worse than none: it lands the trade in the wrong
+// hour-of-day bucket, corrupts the hold time if the two legs guess differently,
+// and is indistinguishable from real data afterwards. null is self-declaring —
+// the trade simply reports an unknown duration.
 function parseIbiTimestamp(s) {
-  const m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2}):(\d{2})/);
+  const m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2}):(\d{2})(?:\s+([A-Z]{2,5}))?/);
   if (!m) return null;
-  const [, mo, d, y, hh, mi, ss] = m;
+  const [, mo, d, y, hh, mi, ss, tz] = m;
+  const off = tz ? TZ_OFFSET[tz] : undefined;
+  const at = off ? new Date(`${y}-${mo}-${d}T${hh}:${mi}:${ss}${off}`) : null;
   return {
     date: `${y}-${mo}-${d}`,
-    ts: new Date(+y, +mo - 1, +d, +hh, +mi, +ss).getTime(),
+    ts: Date.UTC(+y, +mo - 1, +d, +hh, +mi, +ss),
+    at: at && !isNaN(at) ? at.toISOString() : null,
   };
 }
 
@@ -46,100 +68,4 @@ export function parseIBICsv(text) {
 
   txs.sort((a, b) => a.ts - b.ts);
   return matchTransactions(txs);
-}
-
-// ליבת ההתאמה המשותפת (IBI/Blink): מקבלת טרנזקציות ממוינות כרונולוגית
-// ({date, symbol, buy, qty, price}) ומחזירה רשומות יומן — קניות פותחות/מוסיפות
-// לפוזיציה, מכירות סוגרות מולה, מהחדש לישן.
-export function matchTransactions(txs) {
-  // symbol → running long position; instance increments each time a position
-  // reopens so same-day merges never span two separate round trips.
-  const pos = {};
-  const lastClose = {};
-  const trades = [];
-  let instanceSeq = 0;
-
-  for (const tx of txs) {
-    const p = (pos[tx.symbol] ||= { qty: 0, cost: 0, date: null, instance: 0 });
-
-    if (tx.buy) {
-      if (p.qty === 0) {
-        p.date = tx.date;
-        p.instance = ++instanceSeq;
-      }
-      p.cost = (p.cost * p.qty + tx.price * tx.qty) / (p.qty + tx.qty);
-      p.qty += tx.qty;
-      continue;
-    }
-
-    const matched = Math.min(tx.qty, p.qty);
-    if (matched > 0) {
-      const prev = lastClose[tx.symbol];
-      if (prev && prev.instance === p.instance && prev.exitDate === tx.date) {
-        // Another partial close of the same position on the same day — merge.
-        const newQty = prev.qty + matched;
-        prev.exit = (prev.exit * prev.qty + tx.price * matched) / newQty;
-        prev.qty = newQty;
-        Object.assign(prev.trade, makeTrade({
-          date: prev.trade.date,
-          exitDate: tx.date,
-          ticker: tx.symbol,
-          quantity: newQty,
-          entryPrice: prev.entry,
-          exitPrice: prev.exit,
-        }));
-      } else {
-        const trade = makeTrade({
-          date: p.date,
-          exitDate: tx.date,
-          ticker: tx.symbol,
-          quantity: matched,
-          entryPrice: p.cost,
-          exitPrice: tx.price,
-        });
-        trades.push(trade);
-        lastClose[tx.symbol] = {
-          trade,
-          instance: p.instance,
-          exitDate: tx.date,
-          qty: matched,
-          entry: p.cost,
-          exit: tx.price,
-        };
-      }
-      p.qty -= matched;
-      if (p.qty === 0) { p.cost = 0; p.date = null; }
-    }
-
-    // Sold more than the tracked position → closing shares bought before the
-    // export window. Entry stays blank for the user to fill in.
-    const excess = tx.qty - matched;
-    if (excess > 0) {
-      trades.push(makeTrade({
-        date: tx.date,
-        exitDate: tx.date,
-        ticker: tx.symbol,
-        quantity: excess,
-        entryPrice: null,
-        exitPrice: tx.price,
-      }));
-    }
-  }
-
-  // Still holding at the end of the window → open trade, no exit yet.
-  for (const [symbol, p] of Object.entries(pos)) {
-    if (p.qty > 0) {
-      trades.push(makeTrade({
-        date: p.date,
-        ticker: symbol,
-        quantity: p.qty,
-        entryPrice: p.cost,
-        exitPrice: null,
-      }));
-    }
-  }
-
-  // Newest first
-  trades.sort((a, b) => b.date.localeCompare(a.date));
-  return trades;
 }

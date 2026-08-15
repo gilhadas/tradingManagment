@@ -47,6 +47,18 @@ create unique index if not exists trades_user_external_uidx
 -- הסגירה בפועל, ללא תלות באיך `trade_date` מחושב עבור הברוקר שלו.
 alter table public.trades add column if not exists exit_date date;
 
+-- חותמי הזמן המדויקים של הכניסה והיציאה, לחישוב משך החזקה ופילוח לפי שעת
+-- כניסה. nullable בכוונה: ל-IBKR CSV ול-Blink PDF אין שעה במקור ולא תהיה,
+-- ולכן NULL פירושו "לא נרשם" ולעולם לא "אפס". IBI נושא HH:MM:SS עם קיצור אזור
+-- זמן (EDT/EST), והבוט DayTrade נושא ISO-8601 ב-UTC.
+alter table public.trades add column if not exists entry_at timestamptz;
+alter table public.trades add column if not exists exit_at  timestamptz;
+
+-- עמלה כוללת לסבב המסחר, כערך חיובי (הברוקרים מדווחים אותה שלילית). מסוכמת
+-- לאורך הפוזיציה ומחולקת יחסית כשפוזיציה נסגרת בחלקים. ה-P&L הדולרי באפליקציה
+-- הוא נטו — כלומר בניכוי העמודה הזו. NULL = לא נרשם, ומתנהג כאפס.
+alter table public.trades add column if not exists commission numeric;
+
 alter table public.trades enable row level security;
 
 -- מדיניות גישה: משתמש מחובר ניגש אך ורק לשורות שלו

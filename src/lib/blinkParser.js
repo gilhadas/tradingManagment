@@ -9,7 +9,7 @@
 // LAST three numeric tokens before the symbol. דיבידנד and other non-trade
 // rows are skipped.
 
-import { matchTransactions } from "./ibiParser.js";
+import { matchTransactions } from "./tradeMatching.js";
 
 const DATE_RE = /^(\d{2})\.(\d{2})\.(\d{4})$/;
 const NUM_RE = /^-?[\d,]+(?:\.\d+)?$/;

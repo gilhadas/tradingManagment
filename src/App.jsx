@@ -35,8 +35,22 @@ const MISTAKES = [
   "Ignored market context",
 ];
 
-// רווח/הפסד בדולרים: כמות × (יציאה − כניסה), הפוך לשורט. null אם חסר ערך.
+// רווח/הפסד נטו בדולרים: כמות × (יציאה − כניסה), הפוך לשורט, פחות עמלה.
+// null אם חסר ערך. עמלה חסרה נחשבת 0, כך שטריידים בלי נתוני עמלה (ידניים,
+// IBI, Blink) לא מושפעים. כל התצוגות — לוח שנה, גרף הון, האריחים והפילוחים —
+// עוברות דרך הפונקציה הזו, ולכן כולן נטו.
 const tradeDollarPnl = (t) => {
+  const qty = parseFloat(t.quantity);
+  const entry = parseFloat(t.entryPrice);
+  const exit = parseFloat(t.exitPrice);
+  if (isNaN(qty) || isNaN(entry) || isNaN(exit)) return null;
+  const gross = (t.direction === "Short" ? entry - exit : exit - entry) * qty;
+  const comm = parseFloat(t.commission);
+  return gross - (isNaN(comm) ? 0 : comm);
+};
+
+// רווח/הפסד ברוטו — לפני עמלה. משמש רק להצגה לצד הנטו.
+const tradeGrossPnl = (t) => {
   const qty = parseFloat(t.quantity);
   const entry = parseFloat(t.entryPrice);
   const exit = parseFloat(t.exitPrice);
@@ -52,6 +66,159 @@ const tradeDollarPnl = (t) => {
 // קודם ו-date הוא הנפילה — נכון לשני המקרים. טריידים שיובאו לפני שהעמודה
 // exit_date נוספה נשארים על תאריך הפתיחה עד ייבוא חוזר שימלא אותה.
 const pnlDate = (t) => t.exitDate || t.date;
+
+// ── זמן שוק ומשך החזקה ─────────────────────────────────────────────────────
+// כל חישובי השעה נעשים בזמן שוק (ניו-יורק), לא בזמן הדפדפן — כך שטרייד ידני
+// ומיובא נופלים לאותו דלי שעה. ה-formatters נבנים פעם אחת: בנייה שלהם עולה
+// זמן והם רצים לכל טרייד בכל render.
+const MARKET_TZ = "America/New_York";
+
+const ET_HM = new Intl.DateTimeFormat("en-US", {
+  timeZone: MARKET_TZ, hour: "2-digit", minute: "2-digit", hour12: false, hourCycle: "h23",
+});
+// דקה-ביום בזמן שוק. ה-% 24 מגן מפני מנועים שמחזירים "24" לחצות, מה שהיה
+// ממיין טרייד של 00:xx אחרי כל השאר.
+const etMinutes = (ms) => {
+  const p = ET_HM.formatToParts(ms);
+  const h = Number(p.find(x => x.type === "hour").value) % 24;
+  return h * 60 + Number(p.find(x => x.type === "minute").value);
+};
+
+// תאריך לוח בזמן שוק ("2026-07-17"); en-CA מפרמט כ-YYYY-MM-DD.
+const ET_YMD = new Intl.DateTimeFormat("en-CA", {
+  timeZone: MARKET_TZ, year: "numeric", month: "2-digit", day: "2-digit",
+});
+const etDate = (ms) => ET_YMD.format(ms);
+
+// timestamptz שנשמר -> מילישניות. PostgREST תמיד פולט offset מפורש, ולכן
+// Date.parse בטוח כאן (בניגוד למחרוזת עם קיצור אזור זמן).
+const tradeInstant = (v) => {
+  if (!v) return null;
+  const ms = Date.parse(v);
+  return Number.isNaN(ms) ? null : ms;
+};
+
+// הפרש ימים שלמים בין שני "YYYY-MM-DD". נבנה מ-Date.UTC על החלקים: ל-UTC אין
+// שעון קיץ, אז טווח שחוצה מעבר שעון עדיין יוצא מספר שלם.
+// ⚠ לא new Date(str) − new Date(str): "2026-07-17" נקרא כחצות UTC ואילו
+// new Date(2026,6,17) כחצות מקומית, וערבוב הצורות הוא שגיאת יום שקטה.
+const dayDiff = (a, b) => {
+  if (!a || !b) return null;
+  const p = (s) => { const [y, m, d] = s.split("-").map(Number); return Date.UTC(y, m - 1, d); };
+  return Math.round((p(b) - p(a)) / 86400000);
+};
+
+const MAX_HOLD_MIN = 365 * 24 * 60;
+
+// משך החזקה מדורג. אף פעם לא מחזיר הערכה במסווה של מדידה:
+//   { tier: "exact",   minutes, days }  שני חותמי הזמן קיימים
+//   { tier: "days",    days }           רק תאריכים, ויציאה ביום מאוחר יותר
+//   { tier: "unknown" }                 אותו יום בלי שעות, או פוזיציה פתוחה
+// ⚠ "אותו יום בלי שעות" הוא unknown ולא אפס — זה יכול להיות דקה או 6.5 שעות.
+// הדרגה היא ערך ולא דגל על מספר, כדי שאי אפשר יהיה לממצע בטעות בין דרגות.
+const holdTime = (t) => {
+  const a = tradeInstant(t.entryAt), b = tradeInstant(t.exitAt);
+  if (a != null && b != null) {
+    const minutes = (b - a) / 60000;
+    // שלילי = שיוך פגום; מעל שנה = כמעט בוודאי פרסור שגוי. בשני המקרים נופלים
+    // לדרגת הימים במקום לצייר שטות.
+    if (minutes >= 0 && minutes <= MAX_HOLD_MIN) {
+      // ימי לוח נגזרים מהחותמים עצמם ולא מ-date/exitDate, כי אלה אומרים דברים
+      // שונים בברוקרים שונים (ראה pnlDate) — כך זה נכון לכל מקור בלי יוצא דופן.
+      return { tier: "exact", minutes, days: dayDiff(etDate(a), etDate(b)) };
+    }
+  }
+  const d = dayDiff(t.date, t.exitDate);
+  if (d != null && d > 0) return { tier: "days", days: d };
+  return { tier: "unknown" };
+};
+
+const fmtMinutes = (m) => {
+  if (m < 60) return `${Math.round(m)}m`;
+  if (m < 60 * 24) {
+    const h = Math.floor(m / 60), r = Math.round(m % 60);
+    return r ? `${h}h ${r}m` : `${h}h`;
+  }
+  return `${(m / 1440).toFixed(1)}d`;
+};
+
+// תווית מודעת-דרגה. "~" הוא הסימן היחיד להערכה; unknown מחזיר null כדי
+// שהקורא ישמיט את האלמנט לגמרי ("—" נקרא כמו אפס).
+const holdLabel = (t) => {
+  const h = holdTime(t);
+  if (h.tier === "exact") return { text: fmtMinutes(h.minutes), title: "Exact hold time" };
+  if (h.tier === "days") return { text: `~${h.days}d`, title: "Approximate — only dates were recorded, no intraday times" };
+  return null;
+};
+
+// דליי משך החזקה. הדליים התוך-יומיים נגישים רק מדרגת exact; דליי הסווינג
+// נגישים משתי הדרגות ומשמעותם זהה בשתיהן (מספר לילות), ולכן טרייד של 26 שעות
+// נופל ל-"1-3d" בין אם החותמים שרדו ובין אם לא — בלי תפר בין מדוד למשוער.
+const HOLD_BUCKETS = [
+  { key: "<5m", label: "< 5m" },
+  { key: "5-30m", label: "5 – 30m" },
+  { key: "30m-2h", label: "30m – 2h" },
+  { key: "2h-day", label: "2h – close" },
+  { key: "1-3d", label: "1 – 3d" },
+  { key: "3-10d", label: "3 – 10d" },
+  { key: "10d+", label: "10d +" },
+  { key: "?", label: "Unknown" },
+];
+
+const holdBucket = (t) => {
+  const h = holdTime(t);
+  if (h.tier === "unknown") return "?";
+  // כל מה שחצה לילה מסווג לפי לילות ולא לפי שעות שעון — זה הציר ששתי הדרגות
+  // יכולות לבטא ביושר, וכך הדליים התוך-יומיים מכילים רק נתונים שנמדדו.
+  if (h.days > 0) return h.days <= 3 ? "1-3d" : h.days <= 10 ? "3-10d" : "10d+";
+  const m = h.minutes;
+  return m < 5 ? "<5m" : m < 30 ? "5-30m" : m < 120 ? "30m-2h" : "2h-day";
+};
+
+// דליי שעת כניסה. הגבולות בדקות-ביום ולא בשעות שלמות, כדי ש-09:30 יעבוד —
+// דלי לפי שעה בלבד היה משייך מילוי פרה-מרקט של 09:15 לשורת פתיחת המסחר.
+const HOUR_BUCKETS = [
+  { label: "Pre", lo: 0, hi: 570 },
+  { label: "09:30", lo: 570, hi: 600 },
+  { label: "10:00", lo: 600, hi: 660 },
+  { label: "11:00", lo: 660, hi: 720 },
+  { label: "12:00", lo: 720, hi: 780 },
+  { label: "13:00", lo: 780, hi: 840 },
+  { label: "14:00", lo: 840, hi: 900 },
+  { label: "15:00", lo: 900, hi: 960 },
+  { label: "Post", lo: 960, hi: 1440 },
+];
+
+// ── המרה בין שעון-קיר בזמן שוק לבין חותם זמן מוחלט (להזנה ידנית) ──────────
+const ET_FULL = new Intl.DateTimeFormat("en-US", {
+  timeZone: MARKET_TZ, hourCycle: "h23",
+  year: "numeric", month: "2-digit", day: "2-digit",
+  hour: "2-digit", minute: "2-digit", second: "2-digit",
+});
+// ההיסט של ניו-יורק ברגע נתון, במילישניות.
+const etOffsetMs = (ms) => {
+  const p = Object.fromEntries(ET_FULL.formatToParts(ms).map(x => [x.type, x.value]));
+  return Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour % 24, +p.minute, +p.second) - ms;
+};
+// ("2026-07-17", "09:41") כזמן שוק -> חותם ISO, או null.
+const etWallToIso = (date, time) => {
+  if (!date || !time) return null;
+  const [y, mo, d] = date.split("-").map(Number);
+  const [hh, mi] = time.split(":").map(Number);
+  if ([y, mo, d, hh, mi].some(Number.isNaN)) return null;
+  const naive = Date.UTC(y, mo - 1, d, hh, mi, 0);
+  // שני מעברים: הבדיקה הראשונה קוראת את ההיסט ברגע השגוי כששעון-הקיר נמצא
+  // בתוך שעה ממעבר שעון; בדיקה חוזרת עם הרגע המתוקן מתכנסת. (הפער של מעבר
+  // האביב והחפיפה של הסתיו נשארים דו-משמעיים פורמלית — אבל הם ב-2 בלילה.)
+  const ms = naive - etOffsetMs(naive - etOffsetMs(naive));
+  return new Date(ms).toISOString();
+};
+const isoToEtTime = (iso) => {
+  const ms = tradeInstant(iso);
+  if (ms == null) return "";
+  const p = Object.fromEntries(ET_FULL.formatToParts(ms).map(x => [x.type, x.value]));
+  return `${String(+p.hour % 24).padStart(2, "0")}:${p.minute}`;
+};
 
 // שווי הפוזיציה בדולרים: כמות × מחיר כניסה. null אם חסר ערך.
 const tradePositionValue = (t) => {
@@ -70,9 +237,14 @@ const monthLabel = (ym) => {
   return new Date(+y, +m - 1, 1).toLocaleString("en-US", { month: "long", year: "numeric" });
 };
 
+// ⚠ בכוונה בלי externalId: טרייד ידני חייב להישאר עם external_id ריק כדי
+// שהאינדקס הייחודי יתייחס לכל אחד כנפרד.
 const emptyTrade = (broker = "IBKR") => ({
   date: new Date().toISOString().slice(0, 10),
   exitDate: "",
+  entryAt: "",
+  exitAt: "",
+  commission: "",
   ticker: "",
   direction: "Long",
   broker,
@@ -181,12 +353,14 @@ function PnlBadge({ pnl }) {
   if (isNaN(val)) return null;
   const color = val > 0 ? "#4caf7d" : val < 0 ? "#e05252" : "#888";
   return (
-    <span style={{
-      color,
-      fontFamily: "'IBM Plex Mono', monospace",
-      fontSize: 13,
-      fontWeight: 600,
-    }}>
+    <span
+      title="Price-based return (entry → exit). Commission is not reflected here, so on commissioned trades this will not exactly match the dollar P&L, which is net."
+      style={{
+        color,
+        fontFamily: "'IBM Plex Mono', monospace",
+        fontSize: 13,
+        fontWeight: 600,
+      }}>
       {val > 0 ? "+" : ""}{val}%
     </span>
   );
@@ -197,6 +371,8 @@ function TradeCard({ trade, onEdit, onDelete }) {
   const borderColor = isNaN(pnl) ? "#222" : pnl > 0 ? "#1e3d2a" : pnl < 0 ? "#3d1e1e" : "#222";
   const dollarPnl = tradeDollarPnl(trade);
   const posValue = tradePositionValue(trade);
+  const hold = holdLabel(trade);
+  const commission = parseFloat(trade.commission) || 0;
 
   return (
     <div style={{
@@ -237,6 +413,24 @@ function TradeCard({ trade, onEdit, onDelete }) {
               fontFamily: "'IBM Plex Mono', monospace",
               letterSpacing: "0.08em",
             }} title="Exit date">→ {trade.exitDate}</span>
+          )}
+          {hold && (
+            <span style={{
+              fontSize: 10,
+              color: "#666",
+              fontFamily: "'IBM Plex Mono', monospace",
+              letterSpacing: "0.08em",
+            }} title={hold.title}>⏱ {hold.text}</span>
+          )}
+          {commission > 0 && (
+            <span style={{
+              fontSize: 10,
+              color: "#666",
+              fontFamily: "'IBM Plex Mono', monospace",
+              letterSpacing: "0.08em",
+            }} title="Commission (already deducted from the P&L shown)">
+              fee ${commission.toFixed(2)}
+            </span>
           )}
           {trade.setupType && (
             <span style={{
@@ -316,7 +510,9 @@ function TradeForm({ trade, onChange, onSave, onCancel, saving }) {
 
   const rr = riskReward();
   const dollarPnl = tradeDollarPnl(trade);
+  const grossPnl = tradeGrossPnl(trade);
   const posValue = tradePositionValue(trade);
+  const hold = holdLabel(trade);
 
   const computedBox = (content, color) => (
     <div style={{
@@ -389,6 +585,41 @@ function TradeForm({ trade, onChange, onSave, onCancel, saving }) {
               empty-date placeholder, not real data. */}
           {!trade.exitDate && (
             <div style={{ fontSize: 10, color: "#555", marginTop: 4 }}>Not recorded — set manually if known</div>
+          )}
+        </Field>
+      </div>
+
+      {/* Row 3 — intraday times. Optional: leaving them empty keeps the trade
+          date-only, exactly as before. Times are MARKET time (ET), which is the
+          only reading under which a hand-typed trade lands in the same hour
+          bucket as an imported one. The echo under each input shows the date it
+          is being combined with — worth watching, because on DayTrade bot rows
+          `date` holds the EXIT date. */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr", gap: 16 }}>
+        <Field label="Entry Time (ET)">
+          <Input type="time" value={isoToEtTime(trade.entryAt)}
+            onChange={v => onChange("entryAt", etWallToIso(trade.date, v) || "")} />
+          {trade.entryAt
+            ? <div style={{ fontSize: 10, color: "#555", marginTop: 4 }}>→ {trade.date} {isoToEtTime(trade.entryAt)} ET</div>
+            : <div style={{ fontSize: 10, color: "#555", marginTop: 4 }}>No time — hold time unknown</div>}
+        </Field>
+        <Field label="Exit Time (ET)">
+          <Input type="time" value={isoToEtTime(trade.exitAt)}
+            onChange={v => onChange("exitAt", etWallToIso(trade.exitDate || trade.date, v) || "")} />
+          {trade.exitAt
+            ? <div style={{ fontSize: 10, color: "#555", marginTop: 4 }}>→ {trade.exitDate || trade.date} {isoToEtTime(trade.exitAt)} ET</div>
+            : <div style={{ fontSize: 10, color: "#555", marginTop: 4 }}>No time — hold time unknown</div>}
+        </Field>
+        <Field label="Commission $">
+          <Input type="number" value={trade.commission} onChange={v => onChange("commission", v)} placeholder="0.00" />
+        </Field>
+        <Field label="Hold Time">
+          {computedBox(hold ? hold.text : "—", hold ? "#e8e8e8" : null)}
+        </Field>
+        <Field label="P&L $ (gross)">
+          {computedBox(
+            grossPnl != null ? fmtUsd(grossPnl, true) : "—",
+            grossPnl != null ? (grossPnl > 0 ? "#4caf7d" : grossPnl < 0 ? "#e05252" : "#888") : null,
           )}
         </Field>
       </div>
@@ -712,12 +943,57 @@ export function AnalyticsView({ trades }) {
   const avgLoss = losses.length ? grossLoss / losses.length : null;
   const expectancy = pnls.length ? pnls.reduce((s, p) => s + p, 0) / pnls.length : null;
 
+  // ── זמן החזקה ממוצע ──
+  // ⚠ רק דרגת exact. מיצוע של דקות מדודות יחד עם הערכות ברמת יום נותן מספר
+  // חסר משמעות, ולכן טריידים בלי חותמי זמן פשוט לא נספרים כאן (והמונה למטה
+  // אומר במפורש על כמה טריידים המספר מבוסס).
+  const timed = closed.map(t => ({ h: holdTime(t), p: tradeDollarPnl(t) })).filter(x => x.h.tier === "exact");
+  const timedWins = timed.filter(x => x.p > 0);
+  const timedLosses = timed.filter(x => x.p <= 0);
+  const avgOf = (arr) => arr.length ? arr.reduce((s, x) => s + x.h.minutes, 0) / arr.length : null;
+  const avgHoldWin = avgOf(timedWins);
+  const avgHoldLoss = avgOf(timedLosses);
+
   const tiles = [
     { label: "Profit Factor", value: profitFactor != null ? profitFactor.toFixed(2) : "—", color: profitFactor != null ? (profitFactor >= 1 ? "#4caf7d" : "#e05252") : undefined },
     { label: "Expectancy / Trade", value: expectancy != null ? fmtUsd(expectancy, true) : "—", color: expectancy > 0 ? "#4caf7d" : expectancy < 0 ? "#e05252" : undefined },
     { label: "Avg Win", value: avgWin != null ? fmtUsd(avgWin, true) : "—", color: "#4caf7d" },
     { label: "Avg Loss", value: avgLoss != null ? fmtUsd(-avgLoss, true) : "—", color: "#e05252" },
+    {
+      label: "Avg Hold W / L",
+      value: timed.length
+        ? <span>
+            <span style={{ color: "#4caf7d" }}>{avgHoldWin != null ? fmtMinutes(avgHoldWin) : "—"}</span>
+            <span style={{ color: "#555" }}> / </span>
+            <span style={{ color: "#e05252" }}>{avgHoldLoss != null ? fmtMinutes(avgHoldLoss) : "—"}</span>
+          </span>
+        : "—",
+      color: "#e8e8e8",
+      caption: timed.length ? `of ${timed.length} timed trade${timed.length !== 1 ? "s" : ""}` : "no timestamps yet",
+    },
   ];
+
+  // ── פילוח לפי משך החזקה ולפי שעת כניסה ──
+  const byHold = Object.fromEntries(HOLD_BUCKETS.map(b => [b.key, { pnl: 0, n: 0, wins: 0 }]));
+  for (const t of closed) {
+    const b = byHold[holdBucket(t)];
+    const p = tradeDollarPnl(t);
+    b.pnl += p; b.n += 1; if (p > 0) b.wins += 1;
+  }
+  const holdMax = Math.max(1, ...Object.values(byHold).map(b => Math.abs(b.pnl)));
+
+  const byHour = HOUR_BUCKETS.map(() => ({ pnl: 0, n: 0, wins: 0 }));
+  let noEntryTime = 0;
+  for (const t of closed) {
+    const ms = tradeInstant(t.entryAt);
+    if (ms == null) { noEntryTime += 1; continue; }
+    const mins = etMinutes(ms);
+    const i = HOUR_BUCKETS.findIndex(b => mins >= b.lo && mins < b.hi);
+    if (i < 0) { noEntryTime += 1; continue; }
+    const p = tradeDollarPnl(t);
+    byHour[i].pnl += p; byHour[i].n += 1; if (p > 0) byHour[i].wins += 1;
+  }
+  const hourMax = Math.max(1, ...byHour.map(b => Math.abs(b.pnl)));
 
   // ── לוח שנה יומי (מקובץ לפי יום הסגירה — ראה pnlDate) ──
   const byDate = {};
@@ -792,6 +1068,47 @@ export function AnalyticsView({ trades }) {
       </div>
     ));
 
+  // שורת עמודה אופקית משותפת. `stats` אופציונלי — כשהוא קיים מוצגים גם מספר
+  // הטריידים ואחוז ההצלחה של הדלי, כמו בדוחות של TradeZella.
+  const barRow = (key, label, value, max, labelW, stats, title) => (
+    <div key={key} title={title}
+      style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0" }}>
+      <span style={{ fontSize: 10, color: stats && stats.n === 0 ? "#555" : "#888", width: labelW, flexShrink: 0 }}>{label}</span>
+      <div style={{ flex: 1, height: 10, background: "#0d0d0d", borderRadius: 1, overflow: "hidden" }}>
+        <div style={{
+          height: "100%",
+          width: `${(Math.abs(value) / max) * 100}%`,
+          background: value > 0 ? "#4caf7d" : value < 0 ? "#e05252" : "transparent",
+          opacity: 0.75,
+        }} />
+      </div>
+      <span style={{ fontSize: 10, width: 64, textAlign: "right", color: value > 0 ? "#4caf7d" : value < 0 ? "#e05252" : "#555" }}>
+        {stats && stats.n === 0 ? "—" : value !== 0 ? fmtUsd(value, true) : "—"}
+      </span>
+      {stats && (
+        <>
+          <span style={{ fontSize: 10, width: 30, textAlign: "right", color: stats.n ? "#888" : "#555" }}>
+            {stats.n || "—"}
+          </span>
+          <span style={{ fontSize: 10, width: 38, textAlign: "right", color: stats.n ? "#888" : "#555" }}>
+            {stats.n ? `${Math.round((stats.wins / stats.n) * 100)}%` : "—"}
+          </span>
+        </>
+      )}
+    </div>
+  );
+
+  // כותרות העמודות של דוחות הפילוח.
+  const barHeader = (labelW) => (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 0 4px", color: "#555", fontSize: 9, letterSpacing: "0.1em" }}>
+      <span style={{ width: labelW, flexShrink: 0 }} />
+      <div style={{ flex: 1 }} />
+      <span style={{ width: 64, textAlign: "right" }}>P&L</span>
+      <span style={{ width: 30, textAlign: "right" }}>N</span>
+      <span style={{ width: 38, textAlign: "right" }}>WIN</span>
+    </div>
+  );
+
   return (
     <div>
       <div style={{ display: "flex", gap: 6, marginBottom: 16 }}>
@@ -801,13 +1118,14 @@ export function AnalyticsView({ trades }) {
       </div>
 
       <div style={{
-        display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 1,
+        display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 1,
         background: "#111", border: "1px solid #1a1a1a", borderRadius: 3, overflow: "hidden", marginBottom: 24,
       }}>
-        {tiles.map(({ label, value, color }) => (
+        {tiles.map(({ label, value, color, caption }) => (
           <div key={label} style={{ padding: "14px 16px", background: "#080808" }}>
             <div style={{ fontSize: 10, color: "#888", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 6 }}>{label}</div>
             <div style={{ fontSize: 18, fontWeight: 700, color: color || "#e8c84a" }}>{value}</div>
+            {caption && <div style={{ fontSize: 9, color: "#555", marginTop: 4 }}>{caption}</div>}
           </div>
         ))}
       </div>
@@ -835,26 +1153,38 @@ export function AnalyticsView({ trades }) {
         </div>
       </div>
 
+      {/* משך החזקה + שעת כניסה */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 24 }}>
+        <div style={panelStyle}>
+          {sectionTitle("Trade Duration Performance")}
+          {barHeader(74)}
+          {HOLD_BUCKETS.map(b => barRow(
+            b.key, b.label, byHold[b.key].pnl, holdMax, 74, byHold[b.key],
+            b.key === "?"
+              ? "No intraday times recorded and closed the same day — the duration can't be inferred"
+              : undefined,
+          ))}
+          <div style={{ fontSize: 9, color: "#555", marginTop: 8 }}>
+            Intraday buckets use measured timestamps only. Trades held overnight are
+            grouped by nights, so date-only imports land in the day buckets honestly.
+          </div>
+        </div>
+        <div style={panelStyle}>
+          {sectionTitle("Trade Time Performance")}
+          {barHeader(42)}
+          {HOUR_BUCKETS.map((b, i) => barRow(b.label, b.label, byHour[i].pnl, hourMax, 42, byHour[i]))}
+          <div style={{ fontSize: 9, color: "#555", marginTop: 8 }}>
+            By entry time, market hours (ET).
+            {noEntryTime > 0 && ` ${noEntryTime} trade${noEntryTime !== 1 ? "s" : ""} excluded — no entry time recorded.`}
+          </div>
+        </div>
+      </div>
+
       {/* פילוחים */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16 }}>
         <div style={panelStyle}>
           {sectionTitle("P&L by Weekday")}
-          {weekdayNames.slice(0, 6).map((name, i) => (
-            <div key={name} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0" }}>
-              <span style={{ fontSize: 10, color: "#888", width: 28 }}>{name}</span>
-              <div style={{ flex: 1, height: 10, background: "#0d0d0d", borderRadius: 1, overflow: "hidden" }}>
-                <div style={{
-                  height: "100%",
-                  width: `${(Math.abs(byWeekday[i]) / weekdayMax) * 100}%`,
-                  background: byWeekday[i] > 0 ? "#4caf7d" : byWeekday[i] < 0 ? "#e05252" : "transparent",
-                  opacity: 0.75,
-                }} />
-              </div>
-              <span style={{ fontSize: 10, width: 64, textAlign: "right", color: byWeekday[i] > 0 ? "#4caf7d" : byWeekday[i] < 0 ? "#e05252" : "#555" }}>
-                {byWeekday[i] !== 0 ? fmtUsd(byWeekday[i], true) : "—"}
-              </span>
-            </div>
-          ))}
+          {weekdayNames.slice(0, 6).map((name, i) => barRow(name, name, byWeekday[i], weekdayMax, 28))}
         </div>
         <div style={panelStyle}>
           {sectionTitle("Top Winners")}
@@ -1089,7 +1419,10 @@ export default function App() {
       try {
         const data = JSON.parse(ev.target.result);
         if (!Array.isArray(data)) { alert("Invalid file"); return; }
-        const rows = data.map(t => toRow(t, session.user.id));
+        // ⚠ externalId מכוון מוסר: קובץ שיוצא מהאפליקציה נושא אותו, וניסיון
+        // להכניס אותו שוב היה מתנגש עם trades_user_external_uidx ומפיל את כל
+        // האצווה. שחזור אמור ליצור שורות חדשות ועצמאיות.
+        const rows = data.map(({ externalId, ...t }) => toRow(t, session.user.id));
         const { error } = await supabase.from("trades").insert(rows);
         if (error) throw error;
         setTrades(await fetchTrades());
@@ -1099,11 +1432,29 @@ export default function App() {
     e.target.value = "";
   };
 
-  // Deterministic id from trade content, so re-importing the same export (or an
+  // Deterministic ids from trade content, so re-importing the same export (or an
   // overlapping window) can't create duplicate rows — matches the DayTrade bot's
   // approach (see schema.sql). Same content -> same id -> upsert skips it.
-  const externalIdFor = (t, broker) =>
-    [broker, t.date, t.ticker, t.quantity, t.entryPrice, t.exitPrice].join("|");
+  //
+  // ⚠ Computed for the whole batch at once because two genuinely different round
+  // trips can share every content field — scalping the same setup twice in a day
+  // gives identical ticker/size/prices. Before the IBKR parser split same-day
+  // cycles apart those were averaged into one row and the clash couldn't arise;
+  // now it can, and without the suffix the upsert would silently drop the second
+  // trade. Repeats get "#2", "#3"…; the first keeps the bare key so ids stay
+  // stable for the overwhelming majority of trades.
+  //
+  // Commission is deliberately NOT part of the key — it isn't an identity
+  // attribute, and a broker restating it would otherwise orphan the row.
+  const externalIdsFor = (parsedTrades, broker) => {
+    const seen = new Map();
+    return parsedTrades.map(t => {
+      const base = [broker, t.date, t.ticker, t.quantity, t.entryPrice, t.exitPrice].join("|");
+      const n = (seen.get(base) || 0) + 1;
+      seen.set(base, n);
+      return n === 1 ? base : `${base}#${n}`;
+    });
+  };
 
   const handleImportFile = (e) => {
     const file = e.target.files[0];
@@ -1128,8 +1479,9 @@ export default function App() {
           const { error: delError } = await supabase.from("trades").delete().eq("broker", broker);
           if (delError) throw delError;
         }
-        const rows = parsed.map(t =>
-          toRow({ ...t, broker, externalId: externalIdFor(t, broker) }, session.user.id)
+        const extIds = externalIdsFor(parsed, broker);
+        const rows = parsed.map((t, i) =>
+          toRow({ ...t, broker, externalId: extIds[i] }, session.user.id)
         );
         const { data, error } = await supabase
           .from("trades")
@@ -1140,30 +1492,49 @@ export default function App() {
         const imported = data ? data.length : parsed.length;
         const skipped = parsed.length - imported;
 
+        // ── מילוי לאחור של עמודות שנוספו אחרי הייבוא הראשון ──
         // ignoreDuplicates לא מעדכן שורות קיימות, ו-external_id לא כולל את
-        // exitDate — כך שטריידים שיובאו לפני שהעמודה exit_date נוספה נשארים
-        // בלי תאריך סגירה גם אחרי ייבוא חוזר של אותו קובץ. ממלאים אותו כאן
-        // בנפרד: רק את העמודה הזו, ורק היכן שהיא ריקה — כדי שלקחים/הערות
-        // שנכתבו ידנית לא יידרסו, וגם תיקון ידני של תאריך לא יבוטל.
-        // רץ רק כשהיו כפילויות: בייבוא נקי כל שורה נכתבה עם exit_date ממילא.
-        // מקובץ לפי תאריך כדי לא לשלוח בקשה נפרדת לכל טרייד.
+        // exit_date / entry_at / exit_at / commission — כך שטריידים שיובאו לפני
+        // שהעמודות האלה נוספו היו נשארים ריקים לנצח גם אחרי ייבוא חוזר.
+        //
+        // מעדכנים רק את העמודות האלה, ורק היכן שהן NULL, כדי שלקחים והערות
+        // שנכתבו ידנית — וגם תיקון ידני של ערך — לא יידרסו.
+        //
+        // ארבעה שומרים מדורגים:
+        //   1. skipped > 0        — בייבוא נקי כל שורה נכתבה מלאה ממילא.
+        //   2. תצלום ה-trades שלפני הייבוא — מדלגים על שורות שכבר מלאות, כך
+        //      שייבוא חוזר של קובץ שכבר מולא לא שולח ולו בקשה אחת.
+        //   3. .is(col, null) בצד השרת — התצלום עלול להיות לא עדכני (מכשיר אחר).
+        //   4. רק שורות שבאמת חסר בהן משהו נכנסות ל-patches.
         let backfilled = 0;
         if (skipped > 0) {
-          const idsByExitDate = {};
-          for (const t of parsed) {
-            if (!t.exitDate) continue;
-            (idsByExitDate[t.exitDate] ||= []).push(externalIdFor(t, broker));
-          }
-          for (const [exitDate, ids] of Object.entries(idsByExitDate)) {
-            const { data: upd, error: updErr } = await supabase
-              .from("trades")
-              .update({ exit_date: exitDate })
-              .eq("broker", broker)
-              .in("external_id", ids)
-              .is("exit_date", null)
-              .select("id");
-            if (updErr) throw updErr;
-            backfilled += upd ? upd.length : 0;
+          const existing = new Map(trades.filter(t => t.externalId).map(t => [t.externalId, t]));
+          const patches = [];
+          parsed.forEach((t, i) => {
+            const cur = existing.get(extIds[i]);
+            if (!cur) return;                       // חדש — נכתב מלא בשורה למעלה
+            const patch = {};
+            if (t.exitDate && !cur.exitDate) patch.exit_date = t.exitDate;
+            if (t.entryAt && !cur.entryAt) patch.entry_at = t.entryAt;
+            if (t.exitAt && !cur.exitAt) patch.exit_at = t.exitAt;
+            if (t.commission && !cur.commission) patch.commission = Number(t.commission);
+            if (Object.keys(patch).length) patches.push({ extId: extIds[i], patch });
+          });
+
+          const CONC = 6;   // מקביליות צנועה: מהיר בהרבה מסדרתי, הרחק מכל מגבלת קצב
+          for (let i = 0; i < patches.length; i += CONC) {
+            const res = await Promise.all(patches.slice(i, i + CONC).map(({ extId, patch }) =>
+              supabase.from("trades")
+                .update(patch)
+                .eq("broker", broker)
+                .eq("external_id", extId)
+                .is(Object.keys(patch)[0], null)
+                .select("id")
+            ));
+            for (const { data: upd, error: e2 } of res) {
+              if (e2) throw e2;
+              backfilled += upd ? upd.length : 0;
+            }
           }
         }
 
@@ -1171,7 +1542,7 @@ export default function App() {
         alert(
           `Imported ${imported} trade${imported !== 1 ? "s" : ""} from ${broker} ${imp.label}` +
           (skipped > 0 ? ` (${skipped} duplicate${skipped !== 1 ? "s" : ""} skipped).` : ".") +
-          (backfilled > 0 ? `\nFilled in the exit date on ${backfilled} existing trade${backfilled !== 1 ? "s" : ""}.` : "") +
+          (backfilled > 0 ? `\nFilled in missing details on ${backfilled} existing trade${backfilled !== 1 ? "s" : ""}.` : "") +
           `\nEntry/exit prices are pre-filled — add your notes, lessons and setup type manually.`
         );
       } catch (err) {

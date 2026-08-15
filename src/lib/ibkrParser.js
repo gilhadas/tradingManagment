@@ -1,82 +1,39 @@
 // Parses an IBKR "Transaction History" CSV export into trade journal entries.
-// Tracks a running position per symbol across days: buys open or add to the
-// position, sells close against it, and each close produces one journal entry
-// with the position's weighted-average entry vs. the sell's weighted-average
-// exit. Same-day round trips therefore still collapse into a single row.
+//
+// Columns (header row: `Transaction History,Header,Date,Account,Description,
+// Transaction Type,Symbol,Quantity,Price,Price Currency,Gross Amount,Commission,
+// Net Amount`):
+//   2 Date · 5 Transaction Type · 6 Symbol · 7 Quantity (signed) · 8 Price · 11 Commission
+//
+// A single order is split across several rows when it fills at different prices,
+// with the commission charged on the first of them — e.g. a 100-share exit can
+// appear as -27/-41/-5/-27 with one -1.5. Those rows are NOT pre-grouped here:
+// `matchTransactions` already folds fills into a running position at a weighted-
+// average price and merges same-day partial exits, so grouping first would
+// produce identical trades. That matters because the commission boundary is not
+// a reliable grouping signal — real exports contain whole orders with no
+// commission row at all (23 such fills in one year of data).
 
-// Handles quoted fields properly (IBKR sometimes quotes values with commas).
-export function parseCsvLine(line) {
-  const result = [];
-  let current = "";
-  let inQuotes = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (ch === '"') {
-      inQuotes = !inQuotes;
-    } else if (ch === "," && !inQuotes) {
-      result.push(current.trim());
-      current = "";
-    } else {
-      current += ch;
-    }
-  }
-  result.push(current.trim());
-  return result;
-}
+import { parseCsvLine, matchTransactions } from "./tradeMatching.js";
 
-// Weighted average price from an array of { qty, price } fills.
-function weightedAvg(fills) {
-  const totalQty = fills.reduce((s, f) => s + f.qty, 0);
-  if (totalQty === 0) return null;
-  return fills.reduce((s, f) => s + f.price * f.qty, 0) / totalQty;
-}
-
-// Blank journal entry; parsed fields are merged over it. The rest (setupType,
-// catalyst, emotions, lesson, …) stay blank for the user to fill in manually.
-// Shared with the other broker parsers (ibiParser).
-export function makeTrade({ date, exitDate, ticker, quantity, entryPrice, exitPrice }) {
-  let pnl = "";
-  if (entryPrice != null && exitPrice != null && entryPrice !== 0) {
-    pnl = (((exitPrice - entryPrice) / entryPrice) * 100).toFixed(2);
-  }
-  return {
-    date,
-    exitDate: exitDate || "",
-    ticker,
-    direction: "Long",
-    setupType: "",
-    catalyst: "",
-    quantity: quantity > 0 ? String(quantity) : "",
-    entryPrice: entryPrice != null ? entryPrice.toFixed(2) : "",
-    stopPrice: "",
-    exitPrice: exitPrice != null ? exitPrice.toFixed(2) : "",
-    pnl,
-    emotionEntry: "",
-    mistakes: [],
-    whatWentRight: "",
-    whatWentWrong: "",
-    lesson: "",
-    wouldRetake: null,
-  };
-}
+export { parseCsvLine, makeTrade } from "./tradeMatching.js";
 
 /**
  * Parse IBKR transaction CSV text.
  * Returns an array of trade objects compatible with the trade journal UI.
  *
- * The CSV has dates but no intraday timestamps, so fills are aggregated per
- * symbol per day; within a day buys are assumed to precede sells (long bias).
- * A trade row is emitted when sells close (part of) an open position, dated by
- * the day the position was opened. Sells with no matching buys in the file
- * (position opened before the export window) become exit-only rows, and
- * positions still open at the end become entry-only rows.
+ * The CSV has dates but no intraday timestamps, so the only sequencing signal is
+ * the row order itself. Fills are matched against a running position in that
+ * order, meaning several enter→exit cycles of one symbol on one day come out as
+ * separate trades rather than being averaged into a single fictional position.
+ * Sells with no matching buys in the file (position opened before the export
+ * window) become exit-only rows, and positions still open at the end become
+ * entry-only rows.
  */
 export function parseIBKRCsv(text) {
   const lines = text.split(/\r?\n/).filter((l) => l.trim());
 
-  // symbol → { date → { buys: [{qty,price}], sells: [{qty,price}] } }
-  const bySymbol = {};
-
+  const txs = [];
   for (const line of lines) {
     const cols = parseCsvLine(line);
 
@@ -97,77 +54,19 @@ export function parseIBKRCsv(text) {
 
     if (qty === 0 || price === 0) continue;
 
-    const days = (bySymbol[symbol] ||= {});
-    const day = (days[date] ||= { buys: [], sells: [] });
-    (rawQty > 0 ? day.buys : day.sells).push({ qty, price });
+    // Commission is "-" on continuation fills. The file reports it as a negative
+    // amount; store the positive magnitude of the cost.
+    const rawComm = cols[11];
+    const comm = !rawComm || rawComm === "-" ? 0 : Math.abs(parseFloat(rawComm)) || 0;
+
+    txs.push({ date, symbol, buy: rawQty > 0, qty, price, comm });
   }
 
-  const trades = [];
+  // Stable sort by date ONLY. Array.prototype.sort is stable (ES2019+), so rows
+  // within a day keep their file order — which is the execution order, and the
+  // only intraday sequencing an IBKR export gives us. Sorting by date as well
+  // keeps this correct if the export is not globally date-ordered.
+  txs.sort((a, b) => a.date.localeCompare(b.date));
 
-  for (const [ticker, days] of Object.entries(bySymbol)) {
-    // Running long position: quantity, weighted-average cost, opening date.
-    let posQty = 0;
-    let posCost = 0;
-    let posDate = null;
-
-    for (const date of Object.keys(days).sort()) {
-      const { buys, sells } = days[date];
-
-      const buyQty = buys.reduce((s, f) => s + f.qty, 0);
-      if (buyQty > 0) {
-        const avgBuy = weightedAvg(buys);
-        if (posQty === 0) posDate = date;
-        posCost = (posCost * posQty + avgBuy * buyQty) / (posQty + buyQty);
-        posQty += buyQty;
-      }
-
-      const sellQty = sells.reduce((s, f) => s + f.qty, 0);
-      if (sellQty > 0) {
-        const avgSell = weightedAvg(sells);
-
-        const matched = Math.min(sellQty, posQty);
-        if (matched > 0) {
-          trades.push(makeTrade({
-            date: posDate,
-            exitDate: date,
-            ticker,
-            quantity: matched,
-            entryPrice: posCost,
-            exitPrice: avgSell,
-          }));
-          posQty -= matched;
-          if (posQty === 0) { posCost = 0; posDate = null; }
-        }
-
-        // Sold more than we bought in this window → closing a position opened
-        // before the export. Entry stays blank for the user to fill in.
-        const excess = sellQty - matched;
-        if (excess > 0) {
-          trades.push(makeTrade({
-            date,
-            exitDate: date,
-            ticker,
-            quantity: excess,
-            entryPrice: null,
-            exitPrice: avgSell,
-          }));
-        }
-      }
-    }
-
-    // Still holding at the end of the window → open trade, no exit yet.
-    if (posQty > 0) {
-      trades.push(makeTrade({
-        date: posDate,
-        ticker,
-        quantity: posQty,
-        entryPrice: posCost,
-        exitPrice: null,
-      }));
-    }
-  }
-
-  // Newest first
-  trades.sort((a, b) => b.date.localeCompare(a.date));
-  return trades;
+  return matchTransactions(txs);
 }
