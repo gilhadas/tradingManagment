@@ -72,9 +72,20 @@ export function parseIBKRCsv(text) {
   const trades = [];
   for (const [account, txs] of byAccount) {
     // Stable sort by date ONLY. Array.prototype.sort is stable (ES2019+), so rows
-    // within a day keep their file order — which is the execution order, and the
-    // only intraday sequencing an IBKR export gives us. Sorting by date as well
-    // keeps this correct if the export is not globally date-ordered.
+    // within a day keep their file order.
+    //
+    // ⚠ The export is DESCENDING by date — newest day first (measured: the date
+    // decreases 180 times and increases 0 times across 927 fills). Sorting fixes
+    // that. But the file is NOT reverse-chronological all the way down: within a
+    // single day the rows run oldest-first, so the stable sort is what makes the
+    // whole list chronological. Reversing the file would break it.
+    //
+    // That combination is surprising enough to have been checked against real
+    // market data rather than assumed, since it decides every long/short label:
+    //   SOXL 2026-05-19 opened at 141.24 and closed at 151.89. Its fills at 143
+    //   come FIRST in the file and its fills at ~155 last — matching the day.
+    //   NBIS 2026-08-14 opened at 258.09 and closed at 277.68; its ~277.3 fills
+    //   come last in the file. Reversed, both would contradict the tape.
     txs.sort((a, b) => a.date.localeCompare(b.date));
     for (const t of matchTransactions(txs)) {
       // Carried so the importer can key on it — two accounts running the same
