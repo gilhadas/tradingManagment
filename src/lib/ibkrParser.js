@@ -76,16 +76,31 @@ export function parseIBKRCsv(text) {
     //
     // ⚠ The export is DESCENDING by date — newest day first (measured: the date
     // decreases 180 times and increases 0 times across 927 fills). Sorting fixes
-    // that. But the file is NOT reverse-chronological all the way down: within a
-    // single day the rows run oldest-first, so the stable sort is what makes the
-    // whole list chronological. Reversing the file would break it.
+    // that. Within a single day the rows appear to run oldest-first, so the
+    // stable sort is what makes the whole list chronological; reversing the file
+    // would break it.
     //
-    // That combination is surprising enough to have been checked against real
-    // market data rather than assumed, since it decides every long/short label:
-    //   SOXL 2026-05-19 opened at 141.24 and closed at 151.89. Its fills at 143
-    //   come FIRST in the file and its fills at ~155 last — matching the day.
-    //   NBIS 2026-08-14 opened at 258.09 and closed at 277.68; its ~277.3 fills
-    //   come last in the file. Reversed, both would contradict the tape.
+    // The within-day part is a MAJORITY finding, not a guarantee. It was measured
+    // against Alpaca minute bars: for every adjacent same-symbol row pair whose
+    // two prices trade in disjoint windows (so the tape fixes their order), file
+    // order was chronological on 19 days and reversed on 7 — the reversed ones
+    // being 2025-07-03 BMNR, 2025-07-14 BBAI, 2025-09-17 OPEN, 2025-10-10 DDOG,
+    // 2025-10-15 CAN, 2025-11-06 CRM, 2026-01-05 CRWV. 2025-07-14 votes BOTH
+    // ways, so it is not a format change partway through the file. Some of the
+    // 7 involve 3-decimal (volume-averaged) prices that the window test places
+    // unreliably, but not all of them do.
+    //
+    // What that costs when it is wrong: the pairing flips, so the Long/Short
+    // label and the per-trade P&L attribution flip with it. The DAY's total P&L
+    // does not — for a symbol that ends the day flat, proceeds − cost − fees is
+    // invariant to how the fills are paired. So totals are safe; individual
+    // direction labels on those days may not be.
+    //
+    // Many days cannot be settled at all: where both prices trade in overlapping
+    // windows, both readings fit the tape exactly. SOXL 2026-05-18 (Buy 154.35 /
+    // Sell 149.41) is one — 100-share prints exist at 154.35 both before and
+    // after the first 149.41 print, so "long, bought 10:06, sold 10:48" and
+    // "short, sold 10:48, covered 11:00" are equally consistent. Both lose $497.
     txs.sort((a, b) => a.date.localeCompare(b.date));
     for (const t of matchTransactions(txs)) {
       // Carried so the importer can key on it — two accounts running the same
