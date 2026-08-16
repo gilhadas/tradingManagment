@@ -146,6 +146,17 @@ export function matchTransactions(txs) {
     const prev = lastClose[tx.symbol];
     if (prev && prev.instance === p.instance && prev.exitDate === tx.date) {
       const newQty = prev.qty + qty;
+      // ⚠ BOTH averages must use the OLD prev.qty, and the entry must be
+      // re-averaged too — not just carried over.
+      //
+      // `addToPosition` moves p.cost when the position is added to, but leaves
+      // p.instance alone, so buy → partial sell → buy more → sell still lands
+      // here. Reusing the original prev.entry then prices the shares bought
+      // later at the ORIGINAL cost and invents money out of nothing: on real
+      // NBIS fills it manufactured $7,268 of profit that no cash movement
+      // supports. The newly closed `qty` shares left at the position's current
+      // weighted cost, so fold that in at its own weight.
+      prev.entry = (prev.entry * prev.qty + p.cost * qty) / newQty;
       prev.exit = (prev.exit * prev.qty + tx.price * qty) / newQty;
       prev.qty = newQty;
       prev.comm += commission;

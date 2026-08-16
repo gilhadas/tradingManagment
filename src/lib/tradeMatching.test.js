@@ -83,6 +83,51 @@ const fill = (date, symbol, qty, price, comm = 0) =>
   near("pro-rated shares sum to the total charged", +c50.commission + +c150.commission, 4.5);
 }
 
+// Adding to a position between two same-day partial exits.
+//
+// This is the shape that manufactured money: the second exit merges into the
+// first trade (same position instance), and the merge used to keep the entry
+// price captured at the FIRST exit — pricing the shares bought later at the
+// original cost. On real NBIS fills that invented $7,268 of profit. The entry
+// must be re-averaged, not carried over.
+{
+  const t = matchTransactions([
+    fill("2026-01-02", "X", 100, 10),
+    fill("2026-01-02", "X", -50, 11),
+    fill("2026-01-02", "X", 50, 20),
+    fill("2026-01-02", "X", -100, 21),
+  ]);
+  eq("add-then-close merges to one trade", t.length, 1);
+  eq("merged quantity covers every share", t[0].quantity, "150");
+  // 100@10 + 50@20 = 1500 over 150 shares
+  near("merged entry re-averages the added shares", +t[0].entryPrice, 13.33, 0.01);
+  near("merged exit is the weighted average", +t[0].exitPrice, 17.67, 0.01);
+}
+
+// The invariant the case above violates, stated directly: for a symbol that
+// starts and ends flat, total P&L is an accounting identity — sells minus buys —
+// no matter how the matcher chooses to pair the fills.
+{
+  const fills = [
+    fill("2026-02-02", "Y", 200, 50, 1),
+    fill("2026-02-02", "Y", -80, 52, 1),
+    fill("2026-02-02", "Y", 120, 61, 1),
+    fill("2026-02-02", "Y", -140, 58, 1),
+    fill("2026-02-03", "Y", -100, 55, 1),
+    fill("2026-02-03", "Y", 100, 47, 1),      // covers the short back to flat
+    fill("2026-02-04", "Y", -100, 59, 1),
+  ];
+  const cash = fills.reduce((s, f) => s + (f.buy ? -1 : 1) * f.qty * f.price - f.comm, 0);
+  const total = matchTransactions(fills).reduce((s, t) => {
+    const q = parseFloat(t.quantity), e = parseFloat(t.entryPrice), x = parseFloat(t.exitPrice);
+    if ([q, e, x].some(Number.isNaN)) return s;
+    const c = parseFloat(t.commission);
+    return s + (t.direction === "Short" ? e - x : x - e) * q - (Number.isNaN(c) ? 0 : c);
+  }, 0);
+  // Tolerance covers makeTrade rounding prices to 2 decimals.
+  near("flat symbol: matched P&L equals the cash identity", total, cash, 0.5);
+}
+
 // ───────────────────────── synthetic: shorts ─────────────────────────
 // The bug this suite exists for: a short used to be mangled into a phantom
 // LONG that survived forever and swallowed a later, unrelated sell.
@@ -286,6 +331,40 @@ function reconcile(path) {
   });
   check(`${label}: every entry date matches a real opening fill`, orphan.length === 0,
     orphan.slice(0, 3).map(t => `${t.ticker} ${t.direction} entry ${t.date}`).join(", "));
+
+  // Cash conservation, per symbol. For a symbol that nets flat over the window,
+  // realised P&L is fixed by the fills alone — proceeds minus cost minus fees —
+  // however the matcher pairs them. Any gap is money invented or destroyed.
+  //
+  // Symbols that do NOT net flat are skipped: their P&L legitimately excludes
+  // shares whose cost basis predates the window (entryPrice "") or that are
+  // still open, so no identity holds.
+  const cash = new Map();
+  const net = new Map();
+  for (const r of raw) {
+    const k = `${r.account}|${r.sym}`;
+    cash.set(k, (cash.get(k) || 0) + (r.qty > 0 ? -1 : 1) * Math.abs(r.qty) * r.price - r.comm);
+    net.set(k, (net.get(k) || 0) + r.qty);
+  }
+  const matched = new Map();
+  for (const t of trades) {
+    const q = parseFloat(t.quantity), e = parseFloat(t.entryPrice), x = parseFloat(t.exitPrice);
+    if ([q, e, x].some(Number.isNaN)) continue;
+    const c = parseFloat(t.commission);
+    const p = (t.direction === "Short" ? e - x : x - e) * q - (Number.isNaN(c) ? 0 : c);
+    const k = `${t.account || ""}|${t.ticker}`;
+    matched.set(k, (matched.get(k) || 0) + p);
+  }
+  const drift = [];
+  for (const [k, n] of net) {
+    if (Math.abs(n) > 0.5) continue;                    // not flat — no identity to check
+    const d = (matched.get(k) || 0) - cash.get(k);
+    // Prices are stored to 2dp, so allow a cent per share on the traded volume.
+    const vol = raw.filter(r => `${r.account}|${r.sym}` === k).reduce((s, r) => s + Math.abs(r.qty), 0);
+    if (Math.abs(d) > Math.max(1, vol * 0.01)) drift.push(`${k} off by ${d.toFixed(2)}`);
+  }
+  check(`${label}: P&L conserves cash on every flat symbol`, drift.length === 0,
+    drift.slice(0, 5).join(", "));
 
   return { trades: trades.length, pairs: rawAgg.size };
 }
