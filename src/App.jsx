@@ -21,6 +21,7 @@ const MIGRATED_KEY = "trade_journal_migrated";
 // here is fetched from Supabase and then never rendered anywhere.
 const BROKERS = ["IBKR", "IBI", "Blink", "DayTrade"];
 const BROKER_KEY = "trade_journal_broker";
+const BASIS_KEY = "trade_journal_date_basis";
 
 const SETUP_TYPES = ["News/Catalyst", "Breakout", "Reversal", "Continuation", "VWAP", "Other"];
 const EMOTIONS = ["FOMO", "Confident", "Hesitant", "Neutral", "Greedy", "Fearful"];
@@ -66,6 +67,34 @@ const tradeGrossPnl = (t) => {
 // קודם ו-date הוא הנפילה — נכון לשני המקרים. טריידים שיובאו לפני שהעמודה
 // exit_date נוספה נשארים על תאריך הפתיחה עד ייבוא חוזר שימלא אותה.
 const pnlDate = (t) => t.exitDate || t.date;
+
+// תאריך הכניסה לפוזיציה — הבסיס החלופי לקיבוץ (ראה DATE_BASIS למטה).
+//
+// ⚠ אי אפשר פשוט להחזיר `t.date`: לשורות של הבוט DayTrade זה כבר תאריך
+// היציאה (journal_sync.py:_trade_date), ובסיס "כניסה" שמחזיר אותן על אותו
+// יום היה שקר שקט — בדיוק סוג התקלה ש-pnlDate נוצר כדי למנוע.
+// לכן, לפי סדר אמינות:
+//   1. entry_at — חותם זמן מדוד, מתורגם ליום בזמן שוק. נכון לכל מקור.
+//   2. יש exitDate → date הוא יום הפתיחה (מוסכמת ייבוא CSV/PDF).
+//   3. פוזיציה פתוחה → date הוא יום הפתיחה, אין עדיין יציאה.
+//   4. אחרת "" — טרייד סגור שיובא לפני שהעמודה exit_date נוספה, שבו date
+//      עמום. מוחזר ריק ולא מנוחש; המסכים סופרים אותו כ"לא ניתן לשיוך".
+const entryDate = (t) => {
+  const ms = tradeInstant(t.entryAt);
+  if (ms != null) return etDate(ms);
+  if (t.exitDate) return t.date;
+  if (!t.exitPrice) return t.date;
+  return "";
+};
+
+// שני הבסיסים שלפיהם אפשר לקבץ ולסנן טריידים. "exit" הוא ברירת המחדל — הרווח
+// נרשם ביום המימוש — ו-"entry" מאפשר לשאול את השאלה ההפוכה: מתי נכנסתי, וכמה
+// זה בסוף הניב. השוואה בין השניים היא בדיוק הכלי לבדוק אם עיתוי המכירה היה טוב.
+const DATE_BASIS = {
+  exit: { key: "exit", label: "Exit date", verb: "Closed", short: "exit" },
+  entry: { key: "entry", label: "Entry date", verb: "Entered", short: "entry" },
+};
+const basisDate = (t, basis) => (basis === "entry" ? entryDate(t) : pnlDate(t));
 
 // ── זמן שוק ומשך החזקה ─────────────────────────────────────────────────────
 // כל חישובי השעה נעשים בזמן שוק (ניו-יורק), לא בזמן הדפדפן — כך שטרייד ידני
@@ -780,18 +809,22 @@ function niceStep(span, target = 5) {
 }
 
 // גרף P&L מצטבר (דולרים, טריידים סגורים בלבד) עם בחירת טווח זמן.
-export function PerformanceView({ trades }) {
+export function PerformanceView({ trades, basis = "exit" }) {
   const [range, setRange] = useState("3M");
   const [hover, setHover] = useState(null);
 
+  const dateOf = (t) => basisDate(t, basis);
   const cutoff = rangeCutoff(range);
-  const closed = trades.filter(t =>
-    tradeDollarPnl(t) != null && pnlDate(t) && (!cutoff || pnlDate(t) >= cutoff));
+  const withPnl = trades.filter(t => tradeDollarPnl(t) != null);
+  const closed = withPnl.filter(t => dateOf(t) && (!cutoff || dateOf(t) >= cutoff));
+  // טריידים שאין להם תאריך בבסיס הנבחר (ראה entryDate) — נספרים ומדווחים
+  // במקום להיעלם בשקט מהגרף.
+  const undated = withPnl.filter(t => !dateOf(t)).length;
 
-  // סכום יומי -> נקודות מצטברות לפי יום הסגירה (ראה pnlDate)
+  // סכום יומי -> נקודות מצטברות לפי הבסיס הנבחר
   const byDate = {};
   for (const t of closed) {
-    const d = pnlDate(t);
+    const d = dateOf(t);
     byDate[d] = (byDate[d] || 0) + tradeDollarPnl(t);
   }
   const dates = Object.keys(byDate).sort();
@@ -872,7 +905,7 @@ export function PerformanceView({ trades }) {
       ) : (
         <div style={{ background: "#080808", border: "1px solid #1e1e1e", borderRadius: 4, padding: "18px 12px 8px" }}>
           <div style={{ fontSize: 10, color: "#888", letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 10px 14px" }}>
-            Cumulative P&L ($)
+            Cumulative P&L ($) — by {DATE_BASIS[basis].short} date
           </div>
           <svg
             viewBox={`0 0 ${W} ${H}`}
@@ -920,18 +953,27 @@ export function PerformanceView({ trades }) {
           </svg>
         </div>
       )}
+
+      {undated > 0 && (
+        <div style={{ fontSize: 9, color: "#555", marginTop: 8 }}>
+          {undated} trade{undated !== 1 ? "s" : ""} excluded — no {DATE_BASIS[basis].short} date recorded.
+        </div>
+      )}
     </div>
   );
 }
 
 // טאב אנליטיקות בסגנון TradeZella: פרופיט-פקטור, ממוצעי רווח/הפסד,
 // לוח שנה יומי של P&L, ופילוחים לפי יום בשבוע ולפי טיקר.
-export function AnalyticsView({ trades }) {
+export function AnalyticsView({ trades, basis = "exit" }) {
   const [range, setRange] = useState("All");
 
+  const dateOf = (t) => basisDate(t, basis);
   const cutoff = rangeCutoff(range);
-  const closed = trades.filter(t =>
-    tradeDollarPnl(t) != null && pnlDate(t) && (!cutoff || pnlDate(t) >= cutoff));
+  const withPnl = trades.filter(t => tradeDollarPnl(t) != null);
+  const closed = withPnl.filter(t => dateOf(t) && (!cutoff || dateOf(t) >= cutoff));
+  // טריידים שאין להם תאריך בבסיס הנבחר (ראה entryDate) — מדווחים ליד הלוח.
+  const undated = withPnl.filter(t => !dateOf(t)).length;
   const pnls = closed.map(tradeDollarPnl);
 
   const wins = pnls.filter(p => p > 0);
@@ -995,10 +1037,10 @@ export function AnalyticsView({ trades }) {
   }
   const hourMax = Math.max(1, ...byHour.map(b => Math.abs(b.pnl)));
 
-  // ── לוח שנה יומי (מקובץ לפי יום הסגירה — ראה pnlDate) ──
+  // ── לוח שנה יומי (מקובץ לפי הבסיס הנבחר — יום הסגירה או יום הכניסה) ──
   const byDate = {};
   for (const t of closed) {
-    const d = pnlDate(t);
+    const d = dateOf(t);
     (byDate[d] ||= { pnl: 0, count: 0 });
     byDate[d].pnl += tradeDollarPnl(t);
     byDate[d].count += 1;
@@ -1022,7 +1064,7 @@ export function AnalyticsView({ trades }) {
 
   // ── יום נבחר — פתיחת רשימת הטריידים של אותו יום ──
   const [selectedDate, setSelectedDate] = useState(null);
-  const selectedDayTrades = selectedDate ? closed.filter(t => pnlDate(t) === selectedDate) : [];
+  const selectedDayTrades = selectedDate ? closed.filter(t => dateOf(t) === selectedDate) : [];
 
   const dayCell = (d) => {
     const has = d.pnl != null;
@@ -1151,6 +1193,12 @@ export function AnalyticsView({ trades }) {
           {Array.from({ length: firstDow }, (_, i) => <div key={`e${i}`} />)}
           {monthDays.map(dayCell)}
         </div>
+        <div style={{ fontSize: 9, color: "#555", marginTop: 8 }}>
+          {basis === "entry"
+            ? "Grouped by entry date — each day shows what the positions opened that day eventually returned."
+            : "Grouped by exit date — each day shows the P&L realised that day."}
+          {undated > 0 && ` ${undated} trade${undated !== 1 ? "s" : ""} excluded — no ${DATE_BASIS[basis].short} date recorded.`}
+        </div>
       </div>
 
       {/* משך החזקה + שעת כניסה */}
@@ -1200,6 +1248,7 @@ export function AnalyticsView({ trades }) {
         <DayTradesModal
           date={selectedDate}
           trades={selectedDayTrades}
+          basis={basis}
           onClose={() => setSelectedDate(null)}
         />
       )}
@@ -1209,7 +1258,7 @@ export function AnalyticsView({ trades }) {
 
 // מודל שמציג את כל הטריידים של יום ספציפי, נפתח בלחיצה על תא בלוח השנה.
 // אותו TradeCard כמו בטאב Journal — אותו UX בדיוק — אבל תצוגה בלבד, ללא עריכה/מחיקה.
-function DayTradesModal({ date, trades, onClose }) {
+function DayTradesModal({ date, trades, onClose, basis = "exit" }) {
   const total = trades.reduce((s, t) => s + (tradeDollarPnl(t) ?? 0), 0);
   return (
     <div onClick={onClose} style={{
@@ -1226,7 +1275,7 @@ function DayTradesModal({ date, trades, onClose }) {
         }}>
           <div>
             <div style={{ fontSize: 13, fontWeight: 700, color: "#e8e8e8", fontFamily: "'IBM Plex Mono', monospace" }}>
-              {date} <span style={{ fontSize: 10, fontWeight: 400, color: "#777" }}>closed</span>
+              {date} <span style={{ fontSize: 10, fontWeight: 400, color: "#777" }}>{DATE_BASIS[basis].verb.toLowerCase()}</span>
             </div>
             <div style={{ fontSize: 11, color: "#888", marginTop: 2 }}>
               {trades.length} trade{trades.length !== 1 ? "s" : ""} ·{" "}
@@ -1302,6 +1351,20 @@ export default function App() {
     setBroker(b);
     setPeriod("latest");
     localStorage.setItem(BROKER_KEY, b);
+  };
+
+  // הבסיס שלפיו כל הלשוניות מקבצות ומסננות טריידים לפי תאריך. משותף לשלושתן
+  // בכוונה: אם היומן והאנליטיקות היו על בסיסים שונים, אותו חודש היה מציג שני
+  // מספרי P&L שונים — בדיוק הבאג שתוקן קודם.
+  const [dateBasis, setDateBasis] = useState(() => {
+    const saved = localStorage.getItem(BASIS_KEY);
+    return DATE_BASIS[saved] ? saved : "exit";
+  });
+
+  const changeBasis = (b) => {
+    setDateBasis(b);
+    setPeriod("latest");   // רשימת החודשים נגזרת מהבסיס, כך שחודש נבחר עלול להיעלם
+    localStorage.setItem(BASIS_KEY, b);
   };
 
   // כשמסומן, ייבוא CSV/PDF חדש ימחק קודם את כל הטריידים של הברוקר הנוכחי.
@@ -1600,21 +1663,25 @@ export default function App() {
 
   // מסננים קודם לפי ברוקר, ואז נגזרים החודשים והסינון החודשי.
   //
-  // הסינון החודשי לפי pnlDate — יום מימוש הרווח — ולא לפי תאריך הכניסה, כדי
-  // שהחודש יאמר אותו דבר בכל הלשוניות. כשזה היה לפי תאריך הכניסה, סווינג שנפתח
-  // ביולי ונסגר באוגוסט נספר ביולי כאן ובאוגוסט באנליטיקות, ו-"Total P&L"
-  // לאוגוסט הראה שני מספרים שונים בשתי לשוניות (הפרש של 1,822$- על נתוני IBKR
-  // האמיתיים, מארבעה סווינגים בלבד).
+  // הסינון החודשי עובר דרך dateBasis — אותו בסיס בדיוק שהאנליטיקות משתמשות בו,
+  // כי כשהיומן היה על תאריך הכניסה והאנליטיקות על תאריך היציאה, סווינג שנפתח
+  // ביולי ונסגר באוגוסט נספר ביולי כאן ובאוגוסט שם, ו-"Total P&L" לאוגוסט הראה
+  // שני מספרים שונים בשתי לשוניות (הפרש של 1,822$- על נתוני IBKR האמיתיים,
+  // מארבעה סווינגים בלבד). מכאן שהמתג הוא אחד וגלובלי.
   // ⚠ pnlDate נופל לתאריך הכניסה כשאין תאריך יציאה, כך שפוזיציה פתוחה עדיין
   // מופיעה בחודש שבו נפתחה — לה עוד אין יום מימוש.
   const brokerTrades = trades.filter(t => (t.broker || "IBKR") === broker);
-  const months = [...new Set(brokerTrades.map(t => (pnlDate(t) || "").slice(0, 7)).filter(m => m.length === 7))]
+  const tradeDate = (t) => basisDate(t, dateBasis) || "";
+  const months = [...new Set(brokerTrades.map(t => tradeDate(t).slice(0, 7)).filter(m => m.length === 7))]
     .sort()
     .reverse();
   const effectivePeriod = period === "latest" ? (months[0] || "all") : period;
   const visibleTrades = effectivePeriod === "all"
     ? brokerTrades
-    : brokerTrades.filter(t => (pnlDate(t) || "").startsWith(effectivePeriod));
+    : brokerTrades.filter(t => tradeDate(t).startsWith(effectivePeriod));
+  // אין להם תאריך בבסיס הנבחר, ולכן הם לא נופלים לאף חודש. נספרים ומוצגים ליד
+  // בורר החודש כדי שהיעלמות שלהם לא תיראה כאיבוד נתונים.
+  const undatedVisible = brokerTrades.filter(t => !tradeDate(t)).length;
 
   const btnStyle = {
     padding: "10px 16px",
@@ -1728,8 +1795,8 @@ export default function App() {
         </div>
       </div>
 
-      {/* Tabs */}
-      <div style={{ display: "flex", gap: 26, padding: "12px 32px 0", borderBottom: "1px solid #1a1a1a", background: "#030303" }}>
+      {/* Tabs + the global date basis switch */}
+      <div style={{ display: "flex", alignItems: "flex-end", gap: 26, padding: "12px 32px 0", borderBottom: "1px solid #1a1a1a", background: "#030303" }}>
         {[["journal", "Journal"], ["performance", "Performance"], ["analytics", "Analytics"]].map(([key, label]) => (
           <button
             key={key}
@@ -1748,6 +1815,35 @@ export default function App() {
             }}
           >{label}</button>
         ))}
+
+        {/* מתג בסיס התאריך — יושב בשורת הלשוניות כי הוא חל על שלושתן יחד.
+            "Exit" מראה מתי מומש הרווח; "Entry" מייחס את אותו רווח ליום הפתיחה,
+            והפרש בין השניים הוא בדיוק העדות לאיכות תזמון המכירה. */}
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, paddingBottom: 8 }}>
+          <span style={{ fontSize: 9, color: "#555", letterSpacing: "0.1em", textTransform: "uppercase" }}>Group by</span>
+          <div style={{ display: "flex", border: "1px solid #2a2a2a", borderRadius: 2, overflow: "hidden" }}>
+            {Object.values(DATE_BASIS).map(b => (
+              <button
+                key={b.key}
+                onClick={() => changeBasis(b.key)}
+                title={b.key === "exit"
+                  ? "Group every date — journal months, calendar, equity curve — by the day the position was closed"
+                  : "Group by the day the position was opened, to judge how the trades you entered on a given day worked out"}
+                style={{
+                  background: dateBasis === b.key ? "#e8c84a" : "none",
+                  border: "none",
+                  color: dateBasis === b.key ? "#000" : "#888",
+                  fontFamily: "'IBM Plex Mono', monospace",
+                  fontSize: 10,
+                  fontWeight: dateBasis === b.key ? 700 : 400,
+                  letterSpacing: "0.08em",
+                  padding: "5px 10px",
+                  cursor: "pointer",
+                }}
+              >{b.label}</button>
+            ))}
+          </div>
+        </div>
       </div>
 
       <div style={{ maxWidth: 900, margin: "0 auto", padding: "28px 32px" }}>
@@ -1763,11 +1859,15 @@ export default function App() {
           }}>{error}</div>
         )}
 
-        {view === "performance" && <PerformanceView trades={brokerTrades} />}
-        {view === "analytics" && <AnalyticsView trades={brokerTrades} />}
+        {view === "performance" && <PerformanceView trades={brokerTrades} basis={dateBasis} />}
+        {view === "analytics" && <AnalyticsView trades={brokerTrades} basis={dateBasis} />}
 
         {view === "journal" && <>
-        {months.length > 0 && <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
+        {months.length > 0 && <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 10, marginBottom: 14 }}>
+          <span style={{ fontSize: 9, color: "#555", letterSpacing: "0.08em" }}>
+            by {DATE_BASIS[dateBasis].short} date
+            {undatedVisible > 0 && ` · ${undatedVisible} not dated`}
+          </span>
           <select
             value={effectivePeriod}
             onChange={e => setPeriod(e.target.value)}
